@@ -69,7 +69,9 @@ replay the quarantined messages.
 | GCS adapter | Tested against a fake client (not real GCS) |
 | Warehouse loader and dbt models | Tested on DuckDB, with an independent metric cross-check |
 | BigQuery client and BigQuery SQL | **Unverified on real BigQuery.** DDL rendering and call flow are tested with a fake; the compiled SQL is parsed as BigQuery SQL offline (syntax only) |
-| Kafka, Spark, Airflow, Prometheus/Grafana, Metabase | Not built yet (Docker phase) |
+| Quality suite, quarantine tool, metrics exporter, static dashboard | Tested on DuckDB demo data (see [observability and quality](observability-and-quality.md)) |
+| Prometheus alert rules, Grafana dashboard JSON | Written and tested against the exporter; **never loaded into running Prometheus/Grafana** |
+| Kafka, Spark, Airflow, running Prometheus/Grafana, Metabase | Not built yet (Docker phase) |
 | Terraform | Validated and statically tested; **never planned or applied** (see [infrastructure](infrastructure.md)) |
 
 ## Cleaning up

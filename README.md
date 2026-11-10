@@ -106,8 +106,8 @@ flowchart LR
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | Scheduling, backfills | Planned |
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
 | Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Kafka, Spark, Airflow, monitoring containers | Planned |
-| Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Metrics and dashboards | Planned |
-| BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Business dashboards over marts | Planned |
+| Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Exporter, alert rules and dashboard JSON written; the services themselves not run yet | Configs tested, services not run |
+| BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Static HTML dashboard today; Metabase planned | Stand-in built |
 
 ## Events at a glance
 
@@ -139,8 +139,8 @@ services are integrated last.
 | M6 | Idempotent warehouse loader (`MERGE`) | Done (DuckDB verified, BigQuery unverified) |
 | M7 | dbt staging, intermediate and mart models | Done (DuckDB verified, BigQuery syntax-checked only) |
 | M8 | Airflow DAGs | Planned |
-| M9 | Data quality and observability | Planned |
-| M10 | BI dashboard and portfolio polish | Planned |
+| M9 | Data quality and observability | Partly done: quality suite, quarantine tool, metrics, alert rules and Grafana JSON written and tested; Prometheus/Grafana not run (Docker) |
+| M10 | BI dashboard and portfolio polish | Partly done: static HTML dashboard (stand-in for Metabase); Metabase, screenshots from real services and demo recording pending |
 
 Cloud code (S3, GCS, BigQuery) is developed behind interfaces and tested with
 `moto` and fakes. It stays marked **unverified** until run against real accounts.
@@ -210,9 +210,24 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Business metrics | Independent Python re-computation vs. marts | Match |
 | BigQuery SQL | Offline compile + sqlglot parse | Syntax only; **not run on BigQuery** |
 | Terraform (AWS, GCP) | `fmt`, `validate` and static security tests in CI | Passing; **never planned or applied** |
+| Data-quality suite | 17 checks, healthy and deliberately broken runs, on real dbt output | Passing |
+| Metrics, alert rules, Grafana JSON | Exporter tests; alerts evaluated in a simulated failure | Passing; **Prometheus/Grafana not run** |
+| Business dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
 
-Kafka, Spark, Airflow, monitoring and the BI dashboard are not built yet. No
-cloud resource has been created and no cloud account is required.
+Kafka, Spark, Airflow, the running Prometheus/Grafana stack and Metabase are not
+built yet (they need Docker). No cloud resource has been created and no cloud
+account is required.
+
+## Quality, metrics and dashboard
+
+```bash
+uv run ecomm-quality    --demo-dir data/demo   # data-quality checks (exit 1 on FAIL)
+uv run ecomm-quarantine --demo-dir data/demo   # inspect rejected events
+uv run ecomm-metrics    --demo-dir data/demo --serve 9108   # Prometheus /metrics
+uv run ecomm-report     --demo-dir data/demo   # data/demo/dashboard.html
+```
+
+Details in [observability and quality](docs/observability-and-quality.md).
 
 ## Design principles
 
@@ -237,6 +252,7 @@ cloud resource has been created and no cloud account is required.
 - [Data dictionary and metric definitions](docs/data-dictionary.md)
 - [Operations guide and runbooks](docs/operations.md)
 - [Infrastructure: Terraform, deploy and teardown](docs/infrastructure.md)
+- [Data quality, observability and dashboard](docs/observability-and-quality.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License
