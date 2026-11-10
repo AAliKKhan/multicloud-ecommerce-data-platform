@@ -95,13 +95,14 @@ flowchart LR
 | Language | ![Python](https://img.shields.io/badge/Python_3.12-3776AB?logo=python&logoColor=white) | Generator, validation, loaders, tests | In use |
 | Packaging | ![uv](https://img.shields.io/badge/uv-DE5FE9?logo=uv&logoColor=white) ![Ruff](https://img.shields.io/badge/Ruff-D7FF64?logo=ruff&logoColor=black) ![mypy](https://img.shields.io/badge/mypy-2A6DB2) ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white) | Locked deps, lint, types, tests | In use |
 | Contracts | ![Pydantic](https://img.shields.io/badge/Pydantic_v2-E92063?logo=pydantic&logoColor=white) | Typed config and event schemas | In use |
+| Local warehouse | ![DuckDB](https://img.shields.io/badge/DuckDB-FFF000?logo=duckdb&logoColor=black) | Local stand-in for BigQuery (same loader, same dbt models) | In use |
 | CI | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) | Lint, types, tests on every push | In use |
 | Broker | ![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?logo=apachekafka&logoColor=white) | Durable event transport (KRaft) | Planned |
 | Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events | Planned |
-| Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds; MinIO locally | Planned |
+| Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds; local directories stand in today | Adapters built, cloud unverified |
 | Catalog | ![Glue](https://img.shields.io/badge/AWS_Glue_Catalog-FF9900?logo=amazonwebservices&logoColor=white) | Metadata for the S3 copy | Planned |
-| Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Planned |
-| Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | Staging, intermediate, marts, tests | Planned |
+| Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Client built, unverified |
+| Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | 19 models, 85+ tests; runs on DuckDB, BigQuery SQL syntax-checked | In use |
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | Scheduling, backfills | Planned |
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Cloud resources; local stack | Planned |
 | Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Metrics and dashboards | Planned |
@@ -132,16 +133,16 @@ services are integrated last.
 | M1 | Seeded synthetic commerce generator and event contracts | Done |
 | M2 | Kafka producer and local broker (Docker) | Planned |
 | M3 | Spark streaming validation, dedup, quarantine | Planned |
-| M4 | Storage abstraction, manifests, cross-cloud parity | Planned |
+| M4 | Storage abstraction, manifests, cross-cloud parity | Done (cloud adapters unverified) |
 | M5 | Terraform for AWS and GCP (plan only, never applied by default) | Planned |
-| M6 | Idempotent warehouse loader (BigQuery `MERGE`) | Planned |
-| M7 | dbt staging, intermediate and mart models | Planned |
+| M6 | Idempotent warehouse loader (`MERGE`) | Done (DuckDB verified, BigQuery unverified) |
+| M7 | dbt staging, intermediate and mart models | Done (DuckDB verified, BigQuery syntax-checked only) |
 | M8 | Airflow DAGs | Planned |
 | M9 | Data quality and observability | Planned |
 | M10 | BI dashboard and portfolio polish | Planned |
 
-Cloud code (S3, GCS, BigQuery) will be developed behind interfaces and tested
-with fakes. It stays marked **unverified** until run against real accounts.
+Cloud code (S3, GCS, BigQuery) is developed behind interfaces and tested with
+`moto` and fakes. It stays marked **unverified** until run against real accounts.
 
 ## Quick start (no Docker, no cloud)
 
@@ -181,6 +182,36 @@ adjustable (`--malformed-rate`, `--late-rate`, `--out-of-order-rate`,
 (the same validator the Spark job will use); every malformed one is rejected
 with a stable error code.
 
+## Run the whole batch pipeline (no Docker, no cloud)
+
+```bash
+uv sync --all-extras
+uv run ecomm-demo --out data/demo --orders 300 --days 3   # generate, ingest, land, verify parity, load
+cp data/demo/products.csv dbt/seeds/products.csv
+DBT_DUCKDB_PATH=data/demo/warehouse.duckdb \
+  uv run dbt build --project-dir dbt --profiles-dir dbt --target duckdb
+```
+
+In this mode two local directories stand in for S3 and GCS, and DuckDB stands in
+for BigQuery. See the [operations guide](docs/operations.md) and the
+[data dictionary](docs/data-dictionary.md).
+
+## What has been verified
+
+| Area | How | Result |
+|---|---|---|
+| Contracts, generator, ingest, manifests, retries, parity | 200+ unit tests | Passing |
+| Dual-cloud commit: partial failure, retry, corruption | Fault-injecting stores | Passing |
+| S3 adapter | `moto` | Passing (not real AWS) |
+| GCS adapter | Fake client | Passing (not real GCS) |
+| Idempotent load and replay | DuckDB | Replay inserts 0 rows, totals unchanged |
+| dbt models and tests | `dbt build` on DuckDB | 0 errors; warnings flag orphans from quarantined events |
+| Business metrics | Independent Python re-computation vs. marts | Match |
+| BigQuery SQL | Offline compile + sqlglot parse | Syntax only; **not run on BigQuery** |
+
+Kafka, Spark, Airflow, monitoring, Terraform and the BI dashboard are not built
+yet. No cloud resource has been created and no cloud account is required.
+
 ## Design principles
 
 - **At-least-once delivery plus idempotent writes and deduplication.** The
@@ -201,6 +232,8 @@ with a stable error code.
   5. [Implementation plan](docs/05-IMPLEMENTATION-PLAN-AND-AGENT-INSTRUCTIONS.md)
   6. [Operations, security and cost](docs/06-OPERATIONS-SECURITY-AND-COST.md)
   7. [Portfolio and demo](docs/07-PORTFOLIO-AND-DEMO.md)
+- [Data dictionary and metric definitions](docs/data-dictionary.md)
+- [Operations guide and runbooks](docs/operations.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License
