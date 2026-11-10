@@ -82,6 +82,19 @@ RAW_EVENTS = TableSpec(
     cluster_by=("event_type", "event_id"),
 )
 
+QUALITY_RESULTS = TableSpec(
+    name="quality_results",
+    columns=(
+        Column("run_id", ColumnType.STRING, nullable=False),
+        Column("check_id", ColumnType.STRING, nullable=False),
+        Column("status", ColumnType.STRING, nullable=False),  # PASS | WARN | FAIL
+        Column("observed", ColumnType.STRING),
+        Column("expected", ColumnType.STRING),
+        Column("detail", ColumnType.STRING),
+        Column("checked_at", ColumnType.TIMESTAMP, nullable=False),
+    ),
+)
+
 LOAD_AUDIT = TableSpec(
     name="load_audit",
     columns=(

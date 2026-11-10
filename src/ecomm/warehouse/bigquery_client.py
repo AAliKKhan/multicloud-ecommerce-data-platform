@@ -82,6 +82,9 @@ class BigQueryClient:
     def ref(self, table: str) -> str:
         return f"`{self.project}.{self.dataset}.{safe_identifier(table)}`"
 
+    def ref_analytics(self, table: str) -> str:
+        return f"`{self.project}.{self.dataset}_analytics.{safe_identifier(table)}`"
+
     def ensure_table(self, spec: TableSpec) -> None:
         self.execute(render_ddl(self.project, self.dataset, spec))
 

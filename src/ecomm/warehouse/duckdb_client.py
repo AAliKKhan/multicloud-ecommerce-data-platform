@@ -46,8 +46,14 @@ def _normalise(value: Any) -> Any:
 class DuckDBClient:
     dialect = "duckdb"
 
-    def __init__(self, path: str | Path = ":memory:", schema: str = "raw") -> None:
+    def __init__(
+        self,
+        path: str | Path = ":memory:",
+        schema: str = "raw",
+        analytics_schema: str = "analytics",
+    ) -> None:
         self.schema = safe_identifier(schema)
+        self.analytics_schema = safe_identifier(analytics_schema)
         self.path = str(path)
         self._con = duckdb.connect(self.path)
         self._con.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
@@ -57,6 +63,9 @@ class DuckDBClient:
 
     def ref(self, table: str) -> str:
         return f'"{self.schema}"."{safe_identifier(table)}"'
+
+    def ref_analytics(self, table: str) -> str:
+        return f'"{self.analytics_schema}"."{safe_identifier(table)}"'
 
     def ensure_table(self, spec: TableSpec) -> None:
         self.execute(render_ddl(self.schema, spec))
