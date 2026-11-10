@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from ecomm.contracts import parse_event
 from ecomm.contracts.types import format_utc
@@ -179,6 +180,88 @@ def _write_quarantine(cfg: SinkConfig, batch_id: str, payload: bytes) -> None:
             )
 
 
+@dataclass(frozen=True)
+class OffsetPlan:
+    """What Spark planned to read for one micro-batch, from its own checkpoint.
+
+    ``end`` maps ``"topic/partition"`` to the exclusive end offset of this batch;
+    ``start`` is the previous batch's end (``None`` for the first batch, where the
+    start is unknown and the first row received is used instead).
+    """
+
+    end: Mapping[str, int]
+    start: Mapping[str, int] | None = None
+
+
+def parse_offsets_log(text: str) -> dict[str, int]:
+    """Parse Spark's ``offsets/<batch>`` file: version line, metadata JSON, offsets JSON."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 3 or not lines[0].startswith("v"):
+        raise ValueError("unrecognised Spark offsets log format")
+    parsed = json.loads(lines[2])
+    return {
+        f"{topic}/{int(partition)}": int(end)
+        for topic, partitions in parsed.items()
+        for partition, end in partitions.items()
+    }
+
+
+def load_offset_plan(checkpoint_dir: Path, batch_number: int) -> OffsetPlan:
+    """Read this batch's planned end offsets (and the previous batch's) from the checkpoint.
+
+    Spark writes ``offsets/<n>`` before it runs batch ``n`` and keeps it on replay, so it is
+    always present for a batch that is being processed. Raises ``FileNotFoundError`` if not.
+    """
+    offsets_dir = checkpoint_dir / "offsets"
+    end = parse_offsets_log((offsets_dir / str(batch_number)).read_text(encoding="utf-8"))
+    previous = offsets_dir / str(batch_number - 1)
+    start = (
+        parse_offsets_log(previous.read_text(encoding="utf-8"))
+        if batch_number > 0 and previous.is_file()
+        else None
+    )
+    return OffsetPlan(end=end, start=start)
+
+
+def verify_against_plan(rows: Sequence[BatchRow], plan: OffsetPlan) -> list[str]:
+    """Problems if the rows received are not exactly the planned offset range.
+
+    Catches what a pure in-batch gap check cannot: rows dropped at the start or end of a
+    partition's range, and partitions that delivered nothing at all (for example rows
+    discarded by Spark's watermark before reaching the sink). ``rows`` must be sorted by
+    (topic, partition, offset).
+    """
+    by_partition: dict[str, list[int]] = {}
+    for r in rows:
+        by_partition.setdefault(f"{r.topic}/{r.partition}", []).append(r.offset)
+
+    problems = [
+        f"{tp}: received rows but Spark planned none for this partition"
+        for tp in by_partition
+        if tp not in plan.end
+    ]
+    for tp, end in sorted(plan.end.items()):
+        offsets = by_partition.get(tp, [])
+        if plan.start is not None and tp in plan.start:
+            start = plan.start[tp]
+        elif offsets:
+            start = offsets[0]  # first batch: the true start is not recorded
+        else:
+            start = end
+        expected = end - start
+        if expected < 0:
+            problems.append(f"{tp}: planned end {end} is before start {start}")
+        elif offsets != list(range(start, end)):
+            received = len(offsets)
+            first_missing = next((o for o in range(start, end) if o not in set(offsets)), None)
+            problems.append(
+                f"{tp}: planned offsets {start}..{end - 1} ({expected} messages) but received "
+                f"{received}"
+                + (f"; first missing offset {first_missing}" if first_missing is not None else "")
+            )
+    return problems
+
+
 def find_offset_gaps(rows: Sequence[BatchRow]) -> list[str]:
     """Human-readable descriptions of holes in the per-partition offsets of ``rows``.
 
@@ -194,10 +277,31 @@ def find_offset_gaps(rows: Sequence[BatchRow]) -> list[str]:
     return gaps
 
 
-def process_batch(rows: Iterable[BatchRow], batch_number: int, cfg: SinkConfig) -> BatchOutcome:
-    """Land one micro-batch. Safe to call again for the same ``batch_number``."""
+def process_batch(
+    rows: Iterable[BatchRow],
+    batch_number: int,
+    cfg: SinkConfig,
+    plan: OffsetPlan | None = None,
+) -> BatchOutcome:
+    """Land one micro-batch. Safe to call again for the same ``batch_number``.
+
+    With a ``plan`` (Spark's planned offsets for this batch) the rows must match it exactly,
+    or the batch fails before anything is written, even if no rows arrived at all.
+    """
     ordered = sorted(rows, key=lambda r: (r.topic, r.partition, r.offset))
     batch_id = batch_id_for(cfg.run_id, batch_number)
+    if (
+        plan is not None
+        and cfg.fail_on_offset_gap
+        and (problems := verify_against_plan(ordered, plan))
+    ):
+        raise OffsetGapError(
+            f"batch {batch_id}: {len(problems)} partition(s) lost messages between Kafka and the "
+            f"sink, e.g. {problems[0]}. Spark dropped rows older than its watermark: raise "
+            "--dedup-retention-hours to at least the time span of the data being read "
+            "(replaying a historical window needs its full length). Nothing was written; "
+            "the messages are still in Kafka."
+        )
     if not ordered:
         return BatchOutcome(batch_id, 0, 0, 0, 0, 0, False, {})
     if cfg.fail_on_offset_gap and (gaps := find_offset_gaps(ordered)):
