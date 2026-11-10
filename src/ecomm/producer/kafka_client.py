@@ -174,6 +174,7 @@ class ConsumedMessage:
     key: str | None
     value: str
     headers: dict[str, str]
+    timestamp_ms: int = 0
 
 
 def consume_messages(
@@ -220,6 +221,7 @@ def consume_messages(
                     key=msg.key().decode() if msg.key() is not None else None,
                     value=msg.value().decode() if msg.value() is not None else "",
                     headers={k: (v.decode() if v else "") for k, v in raw_headers},
+                    timestamp_ms=int(msg.timestamp()[1]),
                 )
             )
     finally:

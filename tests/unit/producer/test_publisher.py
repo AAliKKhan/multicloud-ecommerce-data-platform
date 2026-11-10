@@ -117,6 +117,15 @@ def test_all_messages_are_delivered_with_key_and_header() -> None:
     assert report.delivered_by_topic == {"commerce.orders": 5}
 
 
+def test_kafka_timestamp_is_passed_only_when_given() -> None:
+    producer = FakeProducer()
+    publisher(producer)[0].publish(
+        [PublishItem("t", "k1", "v1", timestamp_ms=1_700_000_000_123), PublishItem("t", "k2", "v2")]
+    )
+    assert producer.produced[0]["timestamp"] == 1_700_000_000_123
+    assert "timestamp" not in producer.produced[1]  # broker assigns the send time
+
+
 def test_message_without_event_id_has_no_header() -> None:
     producer = FakeProducer()
     publisher(producer)[0].publish([PublishItem("t", "k", "v")])

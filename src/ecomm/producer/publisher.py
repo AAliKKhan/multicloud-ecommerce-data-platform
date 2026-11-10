@@ -45,6 +45,9 @@ class PublishItem:
     key: str
     value: str  # raw message value; may be deliberately invalid
     event_id: str | None = None  # sent as a header when known
+    # Kafka CreateTime in ms. The synthetic generator sets it to the *simulated* arrival
+    # time so lateness can be measured when replaying a historical window.
+    timestamp_ms: int | None = None
 
 
 def extract_event_id(value: str) -> str | None:
@@ -198,12 +201,16 @@ class EventPublisher:
         headers = [("event_id", item.event_id.encode())] if item.event_id else None
         for _ in range(self.queue_full_retries + 1):
             try:
+                extra: dict[str, Any] = {}
+                if item.timestamp_ms is not None:
+                    extra["timestamp"] = item.timestamp_ms
                 self.producer.produce(
                     item.topic,
                     key=item.key.encode(),
                     value=item.value.encode(),
                     headers=headers,
                     on_delivery=on_delivery,
+                    **extra,
                 )
             except BufferError:
                 self.producer.poll(self.queue_full_wait_s)  # let deliveries free queue space

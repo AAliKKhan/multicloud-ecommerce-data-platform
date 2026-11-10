@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from ecomm.config import ConfigError, load_settings
 from ecomm.generator import generate
 from ecomm.generator.cli import add_generator_arguments, config_from_args
+from ecomm.generator.output import write_products_csv
 from ecomm.logging_utils import get_logger
 from ecomm.producer.kafka_client import (
     KafkaUnavailableError,
@@ -92,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
     produce.add_argument("--max-attempts", type=int, default=3)
     produce.add_argument("--flush-timeout", type=float, default=30.0)
     produce.add_argument("--report", type=Path, help="also write the JSON report to this file")
+    produce.add_argument(
+        "--no-simulated-timestamps",
+        action="store_true",
+        help="use the real send time as the Kafka timestamp instead of the generator's "
+        "simulated arrival time (with the default, replaying a past window still shows "
+        "realistic late events to consumers)",
+    )
+    produce.add_argument(
+        "--products-csv", type=Path, help="also write the product catalogue seed (dbt seed)"
+    )
 
     health = sub.add_parser("health", help="check broker reachability and topics")
     _common(health)
@@ -174,14 +185,20 @@ def cmd_produce(args: argparse.Namespace, bootstrap: str, prefix: str) -> int:
 
     stop = threading.Event()
     install_stop_handlers(stop)
+    generated = generate(config)
+    if args.products_csv:
+        write_products_csv(generated, args.products_csv)
     items = (
         PublishItem(
             topic=retopic(e.topic, prefix),
             key=e.key,
             value=e.value,
             event_id=extract_event_id(e.value),
+            timestamp_ms=None
+            if args.no_simulated_timestamps
+            else int(e.arrival_time.timestamp() * 1000),
         )
-        for e in generate(config).emissions
+        for e in generated.emissions
     )
     producer = create_producer(bootstrap)
     publisher = EventPublisher(

@@ -17,7 +17,10 @@ set -euo pipefail
 BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka:19092}"
 PREFIX="${KAFKA_TOPIC_PREFIX:-commerce}"
 KAFKA_BIN=/opt/kafka/bin
-RETENTION_MS=604800000 # 7 days
+# 30 days. The producer stamps messages with their simulated arrival time, which for a
+# replayed historical window is in the past; retention is measured against message
+# timestamps, so a short retention could delete the segment while it is still needed.
+RETENTION_MS=2592000000
 
 create() {
   local name="$1" partitions="$2"

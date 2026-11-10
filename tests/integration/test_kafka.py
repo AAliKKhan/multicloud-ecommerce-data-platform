@@ -62,7 +62,13 @@ def prefix() -> Iterator[str]:
 def sent(prefix: str) -> dict[str, object]:
     emissions = generate(CONFIG).emissions
     items = [
-        PublishItem(retopic(e.topic, prefix), e.key, e.value, extract_event_id(e.value))
+        PublishItem(
+            retopic(e.topic, prefix),
+            e.key,
+            e.value,
+            extract_event_id(e.value),
+            int(e.arrival_time.timestamp() * 1000),
+        )
         for e in emissions
     ]
     publisher = EventPublisher(create_producer(BOOTSTRAP), flush_timeout_s=60)
@@ -107,6 +113,12 @@ def test_headers_carry_event_id_only_when_the_value_has_one(sent: dict[str, obje
         known = extract_event_id(m.value)
         assert m.headers.get("event_id") == known
     assert any(extract_event_id(m.value) is None for m in sent["consumed"])  # malformed exist
+
+
+def test_kafka_timestamps_carry_the_simulated_arrival_time(sent: dict[str, object]) -> None:
+    expected = Counter((i.topic, i.key, i.value, i.timestamp_ms) for i in sent["items"])  # type: ignore[attr-defined]
+    actual = Counter((m.topic, m.key, m.value, m.timestamp_ms) for m in sent["consumed"])  # type: ignore[attr-defined]
+    assert actual == expected
 
 
 def test_duplicates_are_not_removed_by_the_producer(sent: dict[str, object]) -> None:
