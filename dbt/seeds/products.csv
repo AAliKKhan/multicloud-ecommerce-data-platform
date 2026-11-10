@@ -1,0 +1,31 @@
+product_id,sku,product_name,category,unit_price,currency,is_active
+prod_0001,SKU-00001,Nimble Jacket,apparel,16.09,USD,true
+prod_0002,SKU-00002,Deluxe Speaker,electronics,88.14,USD,true
+prod_0003,SKU-00003,Vintage Lamp,home,22.24,USD,true
+prod_0004,SKU-00004,Compact Tent,outdoors,19.76,USD,true
+prod_0005,SKU-00005,Classic Pen Set,stationery,12.52,USD,true
+prod_0006,SKU-00006,Vintage Cap,apparel,44.57,USD,true
+prod_0007,SKU-00007,Nimble Speaker,electronics,162.19,USD,true
+prod_0008,SKU-00008,Vintage Lamp,home,34.15,USD,true
+prod_0009,SKU-00009,Deluxe Lantern,outdoors,101.05,USD,true
+prod_0010,SKU-00010,Urban Pen Set,stationery,34.27,USD,true
+prod_0011,SKU-00011,Vintage Jacket,apparel,27.19,USD,true
+prod_0012,SKU-00012,Urban Charger,electronics,132.63,USD,true
+prod_0013,SKU-00013,Classic Clock,home,51.33,USD,true
+prod_0014,SKU-00014,Vintage Stove,outdoors,50.90,USD,true
+prod_0015,SKU-00015,Nimble Notebook,stationery,25.61,USD,true
+prod_0016,SKU-00016,Eco Cap,apparel,71.25,USD,true
+prod_0017,SKU-00017,Eco Charger,electronics,30.01,USD,true
+prod_0018,SKU-00018,Eco Mug,home,21.07,USD,true
+prod_0019,SKU-00019,Nimble Tent,outdoors,134.55,USD,true
+prod_0020,SKU-00020,Urban Stapler,stationery,29.03,USD,true
+prod_0021,SKU-00021,Urban Scarf,apparel,72.65,USD,true
+prod_0022,SKU-00022,Compact Speaker,electronics,102.48,USD,true
+prod_0023,SKU-00023,Eco Clock,home,36.03,USD,true
+prod_0024,SKU-00024,Vintage Bottle,outdoors,161.47,USD,true
+prod_0025,SKU-00025,Eco Planner,stationery,29.21,USD,true
+prod_0026,SKU-00026,Classic Sneakers,apparel,137.88,USD,true
+prod_0027,SKU-00027,Urban Speaker,electronics,25.51,USD,true
+prod_0028,SKU-00028,Compact Blanket,home,51.86,USD,true
+prod_0029,SKU-00029,Eco Bottle,outdoors,113.11,USD,true
+prod_0030,SKU-00030,Prime Stapler,stationery,19.20,USD,true
