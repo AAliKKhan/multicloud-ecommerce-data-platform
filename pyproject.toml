@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 ecomm-generate = "ecomm.generator.cli:main"
+ecomm-demo = "ecomm.demo:main"
 
 [project.optional-dependencies]
 aws = [
@@ -53,6 +54,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: needs Docker services (Kafka, MinIO, Spark)",
     "cloud: needs real AWS/GCP credentials; skipped unless explicitly enabled",
+    "dbt: runs the dbt CLI in a subprocess (slower)",
 ]
 
 [tool.ruff]
