@@ -1,0 +1,28 @@
+name: ecomm
+version: "1.0.0"
+config-version: 2
+profile: ecomm
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Products with fewer units than this on hand are flagged "low" in mart_inventory_risk.
+  low_stock_threshold: 20
+
+models:
+  ecomm:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  ecomm:
+    +quote_columns: false

@@ -1,0 +1,37 @@
+# No secrets here: everything comes from environment variables or from
+# Application Default Credentials (method: oauth). Use with:
+#   dbt <command> --project-dir dbt --profiles-dir dbt --target duckdb|bigquery
+ecomm:
+  target: duckdb
+  outputs:
+    # Local stand-in for BigQuery (the loader writes schema "raw" in the same file).
+    duckdb:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH', '../data/warehouse.duckdb') }}"
+      schema: analytics
+      threads: 4
+
+    # Real BigQuery. UNVERIFIED: needs a GCP project and credentials.
+    # Raw tables are read from BIGQUERY_DATASET; models are written to
+    # <BIGQUERY_DATASET>_analytics.
+    bigquery:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT_ID', 'unset-project') }}"
+      dataset: "{{ env_var('BIGQUERY_DATASET', 'ecomm') }}_analytics"
+      location: "{{ env_var('GCP_REGION', 'US') }}"
+      threads: 4
+      job_execution_timeout_seconds: 300
+      maximum_bytes_billed: 1000000000   # 1 GB hard cap per query (cost control)
+
+    # COMPILE-ONLY target used by tests/CI to syntax-check the BigQuery SQL without a
+    # cloud account. It is fed a throwaway generated key via the environment and is
+    # never used to call any API (run it only with `dbt compile --no-populate-cache`).
+    bigquery_offline:
+      type: bigquery
+      method: service-account-json
+      project: offline-compile-only
+      dataset: ecomm_analytics
+      location: US
+      threads: 1
+      keyfile_json: "{{ env_var('DBT_BQ_OFFLINE_KEYFILE_JSON', '{}') | as_native }}"
