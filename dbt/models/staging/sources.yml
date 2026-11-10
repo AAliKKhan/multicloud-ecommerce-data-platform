@@ -1,0 +1,41 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Event ledger loaded by the Python warehouse loader (`ecomm.warehouse.loader`).
+      Append-only and de-duplicated on event_id by an idempotent MERGE.
+    # Locally: DuckDB schema "raw". On BigQuery: the dataset in BIGQUERY_DATASET.
+    schema: "{{ env_var('BIGQUERY_DATASET', 'ecomm') if target.type == 'bigquery' else 'raw' }}"
+    tables:
+      - name: raw_events
+        description: One row per valid event. Payload is the original event payload as JSON text.
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 1, period: day}
+          error_after: {count: 7, period: day}
+        columns:
+          - name: event_id
+            data_tests: [unique, not_null]
+          - name: event_type
+            data_tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values:
+                      - order_created
+                      - order_updated
+                      - order_cancelled
+                      - payment_authorized
+                      - payment_captured
+                      - payment_failed
+                      - payment_refunded
+                      - stock_received
+                      - stock_reserved
+                      - stock_adjusted
+                      - customer_created
+                      - customer_updated
+          - name: event_time
+            data_tests: [not_null]
+          - name: payload
+            data_tests: [not_null]

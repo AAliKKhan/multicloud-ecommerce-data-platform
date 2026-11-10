@@ -1,0 +1,95 @@
+version: 2
+
+models:
+  - name: stg_orders
+    description: >
+      Grain: one row per order. Current order state taken from the highest order_version
+      event (tie-break event_time, event_id). Orders whose order_created event was lost
+      or quarantined do not appear. Refresh: view over raw_events.
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests: [not_null]
+      - name: order_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [created, confirmed, shipped, delivered, cancelled]
+      - name: currency
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [USD, EUR, GBP]
+      - name: total_amount
+        data_tests: [not_null]
+
+  - name: stg_order_items
+    description: "Grain: one row per order line (key order_item_id), exploded from order_created events."
+    columns:
+      - name: order_item_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('stg_orders'), field: order_id}
+      - name: quantity
+        data_tests: [not_null]
+
+  - name: stg_payments
+    description: >
+      Grain: one row per payment EVENT (ledger, key event_id). Statuses: authorized,
+      captured, failed, refunded.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: payment_id
+        data_tests: [not_null]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('stg_orders'), field: order_id}
+              config: {severity: warn}   # orphans appear when order_created was quarantined
+      - name: payment_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [authorized, captured, failed, refunded]
+      - name: amount
+        data_tests: [not_null]
+
+  - name: stg_customers
+    description: "Grain: one row per customer (key customer_id); latest created/updated event wins."
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: customer_segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [new, regular, vip]
+
+  - name: stg_inventory_events
+    description: "Grain: one row per inventory movement (key inventory_event_id). Signed quantity_delta."
+    columns:
+      - name: inventory_event_id
+        data_tests: [unique, not_null]
+      - name: movement_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [stock_received, stock_reserved, stock_adjusted]
+      - name: quantity_delta
+        data_tests: [not_null]
+
+  - name: stg_products
+    description: "Grain: one row per product (key product_id), from the products seed."
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+      - name: sku
+        data_tests: [unique, not_null]
