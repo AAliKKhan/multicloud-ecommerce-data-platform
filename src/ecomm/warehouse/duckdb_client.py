@@ -51,12 +51,14 @@ class DuckDBClient:
         path: str | Path = ":memory:",
         schema: str = "raw",
         analytics_schema: str = "analytics",
+        read_only: bool = False,
     ) -> None:
         self.schema = safe_identifier(schema)
         self.analytics_schema = safe_identifier(analytics_schema)
         self.path = str(path)
-        self._con = duckdb.connect(self.path)
-        self._con.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
+        self._con = duckdb.connect(self.path, read_only=read_only)
+        if not read_only:
+            self._con.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
 
     def close(self) -> None:
         self._con.close()
