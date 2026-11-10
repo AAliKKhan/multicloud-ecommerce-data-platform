@@ -1,0 +1,124 @@
+version: 2
+
+models:
+  - name: fct_orders
+    description: >
+      Grain: one row per order (key order_id). Refresh: full table rebuild.
+      {{ doc('metric_definitions') }}
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_customers'), field: customer_id}
+              config: {severity: warn}   # orphans appear when customer_created was quarantined
+      - name: order_date
+        data_tests: [not_null]
+      - name: order_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [created, confirmed, shipped, delivered, cancelled]
+      - name: payment_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [refunded, partially_refunded, captured, failed, authorized, unpaid]
+      - name: is_qualifying
+        data_tests: [not_null]
+      - name: net_sales_amount
+        description: "Qualifying orders: subtotal - discount - refunds. Otherwise 0."
+
+  - name: fct_order_items
+    description: "Grain: one row per order line (key order_item_id). Refresh: full table rebuild."
+    columns:
+      - name: order_item_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('fct_orders'), field: order_id}
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_products'), field: product_id}
+
+  - name: fct_payments
+    description: >
+      Grain: one row per payment EVENT (key event_id), an event ledger. Payment-level
+      outcomes are derived in mart_payment_health. Refresh: full table rebuild.
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('fct_orders'), field: order_id}
+              config: {severity: warn}
+      - name: payment_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [authorized, captured, failed, refunded]
+
+  - name: fct_inventory_movements
+    description: "Grain: one row per inventory movement (key inventory_event_id)."
+    columns:
+      - name: inventory_event_id
+        data_tests: [unique, not_null]
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_products'), field: product_id}
+
+  - name: dim_customers
+    description: "Grain: one row per customer (key customer_id). Type 1. Lifetime figures use qualifying orders."
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+
+  - name: dim_products
+    description: "Grain: one row per product (key product_id). Type 1."
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+
+  - name: mart_daily_sales
+    description: >
+      Grain: one row per order_date (key order_date). Daily GMV, net sales, qualifying
+      order count and average order value.
+    columns:
+      - name: order_date
+        data_tests: [unique, not_null]
+      - name: net_sales
+        data_tests: [not_null]
+
+  - name: mart_product_performance
+    description: "Grain: one row per product, qualifying orders only (key product_id). Net sales are before refunds."
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+
+  - name: mart_payment_health
+    description: >
+      Grain: one row per payment_date of terminal outcome (key payment_date).
+      success_rate = captured / (captured + failed).
+    columns:
+      - name: payment_date
+        data_tests: [unique, not_null]
+
+  - name: mart_inventory_risk
+    description: "Grain: one row per (product_id, location_id). Current on-hand and stock_status."
+    columns:
+      - name: product_id
+        data_tests: [not_null]
+      - name: stock_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [out_of_stock, low, ok]
