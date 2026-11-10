@@ -32,6 +32,22 @@ as working until its acceptance test passes.
 Docker-dependent milestones are built last; Python-only parts come first and
 are tested without Docker.
 
+## Quick start (no Docker, no cloud)
+
+Requires [uv](https://docs.astral.sh/uv/). It installs Python 3.12 for you.
+
+```bash
+uv sync                  # create .venv and install locked dependencies
+cp .env.example .env     # optional; defaults work for local mode
+uv run pytest            # run the tests
+uv run ruff check .      # lint
+uv run ruff format --check .
+uv run mypy              # type check
+```
+
+Python is pinned to 3.12 (`>=3.11,<3.13`) because PySpark, Airflow and
+dbt-bigquery do not reliably support newer interpreters.
+
 ## Design principles
 
 - At-least-once delivery plus idempotent writes and deduplication. The project
