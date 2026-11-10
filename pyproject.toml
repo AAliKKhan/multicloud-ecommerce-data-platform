@@ -20,6 +20,7 @@ ecomm-metrics = "ecomm.observability.cli:main"
 ecomm-quarantine = "ecomm.lake.quarantine_cli:main"
 ecomm-report = "ecomm.report.cli:main"
 ecomm-kafka = "ecomm.producer.cli:main"
+ecomm-load = "ecomm.warehouse.cli:main"
 
 [project.optional-dependencies]
 aws = [
