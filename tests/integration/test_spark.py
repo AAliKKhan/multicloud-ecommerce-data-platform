@@ -32,6 +32,7 @@ from ecomm.lake.raw import event_ids_in_object
 from ecomm.lake.sources import messages_from_emissions
 from ecomm.lake.stats import list_ingest_stats
 from ecomm.producer.kafka_client import (
+    NO_EXPIRY,
     check_health,
     create_producer,
     delete_topics,
@@ -61,7 +62,8 @@ CONFIG = GeneratorConfig(
     out_of_order_rate=0.10,
     duplicate_rate=0.08,
 )
-SPARK_TIMEOUT_S = 900
+# Generous: on a starved 8 GB machine one containerised run took over 15 minutes.
+SPARK_TIMEOUT_S = 1800
 
 
 def docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -120,7 +122,8 @@ def scenario() -> Iterator[Scenario]:
 
     prefix = f"spk{uuid.uuid4().hex[:8]}"
     topics = expected_topics(prefix)
-    ensure_topics(BOOTSTRAP, topics, partitions=3)
+    # Simulated timestamps are old: the topics must never expire mid-test.
+    ensure_topics(BOOTSTRAP, topics, partitions=3, retention_ms=NO_EXPIRY)
     host_dir = REPO / "data" / "spark" / "itest" / prefix
     try:
         emissions = generate(CONFIG).emissions
@@ -279,7 +282,7 @@ def test_too_short_a_retention_fails_loudly_instead_of_dropping_messages_silentl
 
     prefix = f"wmk{uuid.uuid4().hex[:8]}"
     topics = expected_topics(prefix)
-    ensure_topics(BOOTSTRAP, topics, partitions=3)
+    ensure_topics(BOOTSTRAP, topics, partitions=3, retention_ms=NO_EXPIRY)
     host_dir = REPO / "data" / "spark" / "itest" / prefix
     try:
         publisher = EventPublisher(create_producer(BOOTSTRAP), flush_timeout_s=60)

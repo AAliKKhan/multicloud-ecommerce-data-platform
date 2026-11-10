@@ -21,6 +21,7 @@ from ecomm.generator import GeneratorConfig, generate
 from ecomm.producer.cli import main as kafka_main
 from ecomm.producer.cli import retopic
 from ecomm.producer.kafka_client import (
+    NO_EXPIRY,
     check_health,
     consume_messages,
     create_producer,
@@ -53,7 +54,7 @@ def prefix() -> Iterator[str]:
         pytest.skip(f"no Kafka broker at {BOOTSTRAP} (docker compose up -d kafka)")
     name = f"itest{uuid.uuid4().hex[:8]}"
     topics = expected_topics(name)
-    ensure_topics(BOOTSTRAP, topics, partitions=3)
+    ensure_topics(BOOTSTRAP, topics, partitions=3, retention_ms=NO_EXPIRY)
     yield name
     delete_topics(BOOTSTRAP, topics)
 
