@@ -8,8 +8,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
-dist/
-build/
+/dist/
+/build/
 
 # Secrets and local config (never commit)
 .env
@@ -50,3 +50,5 @@ dbt/logs/
 Thumbs.db
 dbt/.user.yml 
 /tools/ 
+docker/spark/dist/* 
+!docker/spark/dist/.gitkeep 

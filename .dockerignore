@@ -1,0 +1,11 @@
+.git
+.venv
+data
+tools
+dbt/target
+dbt/logs
+infra/terraform/**/.terraform
+**/__pycache__
+*.duckdb
+.env
+.env.*
