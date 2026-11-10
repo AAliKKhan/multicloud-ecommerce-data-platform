@@ -115,16 +115,40 @@ class _Round:
     interrupted: bool = False
 
 
+# librdkafka reports a message that timed out locally (broker down, network cut) as
+# not "retriable" because *it* gave up. For us that is the main case for another
+# bounded round, so these local transient errors are treated as retriable.
+_TRANSIENT_LOCAL = frozenset(
+    {"_MSG_TIMED_OUT", "_TRANSPORT", "_ALL_BROKERS_DOWN", "_TIMED_OUT", "_RESOLVE", "_QUEUE_FULL"}
+)
+# Retrying cannot fix these: they need a code or configuration change.
+_PERMANENT = frozenset(
+    {
+        "MSG_SIZE_TOO_LARGE",
+        "_MSG_SIZE_TOO_LARGE",
+        "TOPIC_AUTHORIZATION_FAILED",
+        "CLUSTER_AUTHORIZATION_FAILED",
+        "SASL_AUTHENTICATION_FAILED",
+        "INVALID_TOPIC_EXCEPTION",
+        "_INVALID_ARG",
+        "_FATAL",
+    }
+)
+
+
 def _describe(error: Any) -> tuple[str, bool]:
     try:
-        name = error.name()
+        name = str(error.name())
     except Exception:
         name = type(error).__name__
+    if name in _PERMANENT:
+        return name, False
+    if name in _TRANSIENT_LOCAL:
+        return name, True
     try:
-        retriable = bool(error.retriable())
+        return name, bool(error.retriable())
     except Exception:
-        retriable = True
-    return str(name), retriable
+        return name, True
 
 
 class EventPublisher:
