@@ -1,24 +1,135 @@
 # Multi-Cloud E-Commerce Data Platform
 
-A portfolio-grade data engineering project: synthetic e-commerce events flow
-through **Kafka** and **PySpark Structured Streaming**, land as raw data in
-**AWS S3** and **Google Cloud Storage**, load into **BigQuery**, are modelled
-with **dbt**, orchestrated by **Airflow**, and monitored with **Prometheus**
-and **Grafana**. Infrastructure is described with **Terraform**.
+[![CI](https://github.com/AAliKKhan/multicloud-ecommerce-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/AAliKKhan/multicloud-ecommerce-data-platform/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Data](https://img.shields.io/badge/data-100%25%20synthetic-blueviolet)
+![Cloud](https://img.shields.io/badge/cloud-opt--in-orange)
+
+A production-style **data engineering platform** for a fictional online shop.
+It ingests order, payment, customer and inventory events, streams them
+through Kafka, validates and de-duplicates them with Spark, archives the raw
+data in **AWS S3** and **Google Cloud Storage**, loads trusted tables into
+**BigQuery**, models them with **dbt**, orchestrates everything with
+**Airflow**, and shows business and pipeline health in dashboards.
 
 > **Synthetic data only.** No real customers, payments or card data are ever
-> used. Cloud deployment is opt-in; the whole pipeline is designed to run
-> locally without cloud credentials.
+> used. Cloud deployment is opt-in and the whole pipeline is designed to run
+> locally without any cloud account.
 
-## Status
+## What it does
 
-This project is being built milestone by milestone. Nothing below is claimed
-as working until its acceptance test passes.
+1. **Generates** realistic fictional shop activity (customers, products,
+   orders, payments, stock movements), including deliberately bad data:
+   duplicates, malformed, late and out-of-order events.
+2. **Streams** versioned JSON events through Kafka topics.
+3. **Validates** every event, quarantines bad ones with a reason, and
+   removes duplicates (PySpark Structured Streaming).
+4. **Archives** raw events in partitioned files on two clouds, with batch
+   manifests so the two copies can be reconciled.
+5. **Loads** clean data into BigQuery with idempotent `MERGE`, so replaying a
+   batch never double-counts revenue.
+6. **Models** staging, intermediate and mart tables with dbt (tests + docs).
+7. **Orchestrates** loads, backfills, quality checks and reconciliation with
+   Airflow.
+8. **Monitors** throughput, quarantine rate, freshness and cross-cloud parity
+   with Prometheus and Grafana, and exposes business metrics in a BI
+   dashboard.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    G[Synthetic generator] --> K[(Kafka topics)]
+    K --> S[PySpark Structured Streaming]
+    S -->|valid| RAW[Raw JSONL files]
+    S -->|invalid| Q[Quarantine / DLQ]
+    RAW --> S3[(AWS S3)]
+    RAW --> GCS[(Google Cloud Storage)]
+    S3 --> GLUE[AWS Glue Catalog]
+    S3 --> L[Batch loader]
+    GCS --> P[Parity reconciliation]
+    S3 --> P
+    L -->|staging + MERGE| BQ[(BigQuery)]
+    BQ --> DBT[dbt: staging, intermediate, marts]
+    DBT --> BI[Metabase dashboards]
+    AF{{Airflow}} -.-> L
+    AF -.-> DBT
+    AF -.-> P
+    S -.-> PM[Prometheus]
+    AF -.-> PM
+    PM --> GF[Grafana]
+```
+
+### Life of an order
+
+```mermaid
+sequenceDiagram
+    participant G as Generator
+    participant K as Kafka
+    participant S as Spark
+    participant R as Raw storage (S3 + GCS)
+    participant W as BigQuery + dbt
+    G->>K: order_created, stock_reserved
+    G->>K: payment_authorized, payment_captured
+    K->>S: consume micro-batch
+    S->>S: validate, normalise, de-duplicate by event_id
+    S->>R: append valid events + batch manifest
+    S->>R: quarantine invalid events with reason
+    R->>W: idempotent MERGE (replay-safe)
+    W->>W: dbt builds fct_orders, mart_daily_sales, ...
+```
+
+### Data layers
+
+```mermaid
+flowchart LR
+    A["Raw / bronze<br/>immutable JSONL"] --> B["Validated / silver<br/>typed, de-duplicated Parquet"]
+    B --> C["Curated / gold<br/>BigQuery facts, dimensions, marts"]
+```
+
+## Tech stack
+
+| Layer | Technology | Role | Status |
+|---|---|---|---|
+| Language | ![Python](https://img.shields.io/badge/Python_3.12-3776AB?logo=python&logoColor=white) | Generator, validation, loaders, tests | In use |
+| Packaging | ![uv](https://img.shields.io/badge/uv-DE5FE9?logo=uv&logoColor=white) ![Ruff](https://img.shields.io/badge/Ruff-D7FF64?logo=ruff&logoColor=black) ![mypy](https://img.shields.io/badge/mypy-2A6DB2) ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white) | Locked deps, lint, types, tests | In use |
+| Contracts | ![Pydantic](https://img.shields.io/badge/Pydantic_v2-E92063?logo=pydantic&logoColor=white) | Typed config and event schemas | In use |
+| CI | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) | Lint, types, tests on every push | In use |
+| Broker | ![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?logo=apachekafka&logoColor=white) | Durable event transport (KRaft) | Planned |
+| Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events | Planned |
+| Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds; MinIO locally | Planned |
+| Catalog | ![Glue](https://img.shields.io/badge/AWS_Glue_Catalog-FF9900?logo=amazonwebservices&logoColor=white) | Metadata for the S3 copy | Planned |
+| Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Planned |
+| Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | Staging, intermediate, marts, tests | Planned |
+| Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | Scheduling, backfills | Planned |
+| Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Cloud resources; local stack | Planned |
+| Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Metrics and dashboards | Planned |
+| BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Business dashboards over marts | Planned |
+
+## Events at a glance
+
+| Topic | Key | Event types |
+|---|---|---|
+| `commerce.orders` | `order_id` | `order_created`, `order_updated`, `order_cancelled` |
+| `commerce.payments` | `payment_id` | `payment_authorized`, `payment_captured`, `payment_failed`, `payment_refunded` |
+| `commerce.inventory` | `product_id:location_id` | `stock_received`, `stock_reserved`, `stock_adjusted` |
+| `commerce.customers` | `customer_id` | `customer_created`, `customer_updated` |
+
+Every event shares one envelope (`event_id`, `event_type`, `schema_version`,
+`event_time`, `producer`, `correlation_id`, `payload`). See the
+[data contracts](docs/04-DATA-CONTRACTS-AND-TRANSFORMATIONS.md).
+
+## Project status
+
+Built milestone by milestone. Nothing is claimed as working until its
+acceptance test passes. Python-only milestones come first; the Docker-based
+services are integrated last.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M0 | Repository, config validation, ADRs, CI baseline | In progress |
-| M1 | Seeded synthetic commerce generator | Planned |
+| M0 | Repository, config validation, ADRs, CI | Done |
+| M1 | Seeded synthetic commerce generator and event contracts | In progress |
 | M2 | Kafka producer and local broker (Docker) | Planned |
 | M3 | Spark streaming validation, dedup, quarantine | Planned |
 | M4 | Storage abstraction, manifests, cross-cloud parity | Planned |
@@ -29,12 +140,12 @@ as working until its acceptance test passes.
 | M9 | Data quality and observability | Planned |
 | M10 | BI dashboard and portfolio polish | Planned |
 
-Docker-dependent milestones are built last; Python-only parts come first and
-are tested without Docker.
+Cloud code (S3, GCS, BigQuery) will be developed behind interfaces and tested
+with fakes. It stays marked **unverified** until run against real accounts.
 
 ## Quick start (no Docker, no cloud)
 
-Requires [uv](https://docs.astral.sh/uv/). It installs Python 3.12 for you.
+Requires [uv](https://docs.astral.sh/uv/), which installs Python 3.12 for you.
 
 ```bash
 uv sync                  # create .venv and install locked dependencies
@@ -50,8 +161,9 @@ dbt-bigquery do not reliably support newer interpreters.
 
 ## Design principles
 
-- At-least-once delivery plus idempotent writes and deduplication. The project
-  does **not** claim exactly-once delivery or automatic cross-cloud failover.
+- **At-least-once delivery plus idempotent writes and deduplication.** The
+  project does **not** claim exactly-once delivery or automatic cross-cloud
+  failover.
 - Raw events are immutable and are the replay source.
 - Every event carries an ID, schema version, event time and ingestion time.
 - Duplicate, late, malformed and out-of-order events are handled explicitly.
@@ -59,15 +171,15 @@ dbt-bigquery do not reliably support newer interpreters.
 
 ## Documentation
 
-The full specification is in [`docs/`](docs/README.md):
-
-1. [Product and system requirements](docs/01-PRODUCT-AND-SYSTEM-REQUIREMENTS.md)
-2. [Architecture and data flow](docs/02-ARCHITECTURE-AND-DATA-FLOW.md)
-3. [Tech stack and infrastructure](docs/03-TECH-STACK-AND-INFRASTRUCTURE.md)
-4. [Data contracts and transformations](docs/04-DATA-CONTRACTS-AND-TRANSFORMATIONS.md)
-5. [Implementation plan](docs/05-IMPLEMENTATION-PLAN-AND-AGENT-INSTRUCTIONS.md)
-6. [Operations, security and cost](docs/06-OPERATIONS-SECURITY-AND-COST.md)
-7. [Portfolio and demo](docs/07-PORTFOLIO-AND-DEMO.md)
+- Full specification: [`docs/`](docs/README.md)
+  1. [Product and system requirements](docs/01-PRODUCT-AND-SYSTEM-REQUIREMENTS.md)
+  2. [Architecture and data flow](docs/02-ARCHITECTURE-AND-DATA-FLOW.md)
+  3. [Tech stack and infrastructure](docs/03-TECH-STACK-AND-INFRASTRUCTURE.md)
+  4. [Data contracts and transformations](docs/04-DATA-CONTRACTS-AND-TRANSFORMATIONS.md)
+  5. [Implementation plan](docs/05-IMPLEMENTATION-PLAN-AND-AGENT-INSTRUCTIONS.md)
+  6. [Operations, security and cost](docs/06-OPERATIONS-SECURITY-AND-COST.md)
+  7. [Portfolio and demo](docs/07-PORTFOLIO-AND-DEMO.md)
+- Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License
 
