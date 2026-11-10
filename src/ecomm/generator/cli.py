@@ -25,10 +25,8 @@ from ecomm.generator.config import DEFAULT_START
 from ecomm.generator.output import emission_record, write_fixture
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="ecomm-generate", description="Generate synthetic e-commerce events."
-    )
+def add_generator_arguments(parser: argparse.ArgumentParser) -> None:
+    """Generator options shared by ``ecomm-generate`` and ``ecomm-kafka produce``."""
     parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
     parser.add_argument("--orders", type=int, default=200, help="number of orders")
     parser.add_argument("--customers", type=int, default=50)
@@ -41,6 +39,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-of-order-rate", type=float, default=0.05)
     parser.add_argument("--duplicate-rate", type=float, default=0.03)
     parser.add_argument("--late-threshold-minutes", type=int, default=60)
+
+
+def config_from_args(args: argparse.Namespace) -> GeneratorConfig:
+    """Build a validated config; raises ``ValidationError``/``ValueError`` on bad input."""
+    start = datetime.fromisoformat(args.start)
+    return GeneratorConfig(
+        seed=args.seed,
+        start=start,
+        end=start + timedelta(days=args.days),
+        orders=args.orders,
+        customers=args.customers,
+        products=args.products,
+        locations=args.locations,
+        malformed_rate=args.malformed_rate,
+        late_rate=args.late_rate,
+        out_of_order_rate=args.out_of_order_rate,
+        duplicate_rate=args.duplicate_rate,
+        late_threshold_minutes=args.late_threshold_minutes,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ecomm-generate", description="Generate synthetic e-commerce events."
+    )
+    add_generator_arguments(parser)
     parser.add_argument("--out", type=Path, help="write fixture files to this directory")
     parser.add_argument(
         "--rate",
@@ -54,21 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        start = datetime.fromisoformat(args.start)
-        config = GeneratorConfig(
-            seed=args.seed,
-            start=start,
-            end=start + timedelta(days=args.days),
-            orders=args.orders,
-            customers=args.customers,
-            products=args.products,
-            locations=args.locations,
-            malformed_rate=args.malformed_rate,
-            late_rate=args.late_rate,
-            out_of_order_rate=args.out_of_order_rate,
-            duplicate_rate=args.duplicate_rate,
-            late_threshold_minutes=args.late_threshold_minutes,
-        )
+        config = config_from_args(args)
     except (ValidationError, ValueError) as exc:
         print(f"error: invalid arguments: {exc}", file=sys.stderr)
         return 2
