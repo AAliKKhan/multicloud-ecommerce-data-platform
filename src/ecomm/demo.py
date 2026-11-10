@@ -34,6 +34,7 @@ from ecomm.lake.ingest import IngestedEvent, classify, write_quarantine
 from ecomm.lake.parity import reconcile_all
 from ecomm.lake.raw import prepare_batch
 from ecomm.lake.sources import messages_from_emissions
+from ecomm.lake.stats import IngestStats, record_ingest_stats
 from ecomm.storage.local import LocalObjectStore
 from ecomm.warehouse.duckdb_client import DuckDBClient
 from ecomm.warehouse.loader import WarehouseLoader
@@ -65,6 +66,9 @@ def run_batch_demo(config: GeneratorConfig, root: Path, batches: int = 3) -> dic
     )
     run_id = f"demo-{config.seed}"
     quarantine_key = write_quarantine(s3, SOURCE, f"{run_id}-quarantine", classified.quarantined)
+    record_ingest_stats(
+        control, SOURCE, IngestStats.from_classified(run_id, processed_at, classified)
+    )
 
     batch_results = []
     for index, events in enumerate(_split(classified.valid, batches)):
