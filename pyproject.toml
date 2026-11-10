@@ -19,6 +19,7 @@ ecomm-quality = "ecomm.quality.cli:main"
 ecomm-metrics = "ecomm.observability.cli:main"
 ecomm-quarantine = "ecomm.lake.quarantine_cli:main"
 ecomm-report = "ecomm.report.cli:main"
+ecomm-kafka = "ecomm.producer.cli:main"
 
 [project.optional-dependencies]
 aws = [
@@ -27,6 +28,9 @@ aws = [
 gcp = [
     "google-cloud-bigquery>=3.25,<4",
     "google-cloud-storage>=2.18,<4",
+]
+kafka = [
+    "confluent-kafka>=2.5,<3",
 ]
 
 [dependency-groups]
@@ -58,7 +62,7 @@ packages = ["src/ecomm"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
-    "integration: needs Docker services (Kafka, MinIO, Spark)",
+    "integration: needs running Docker services (Kafka, MinIO, Spark); skipped when absent",
     "cloud: needs real AWS/GCP credentials; skipped unless explicitly enabled",
     "dbt: runs the dbt CLI in a subprocess (slower)",
 ]
@@ -92,5 +96,5 @@ files = ["src"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "google.*", "duckdb.*"]
+module = ["boto3.*", "botocore.*", "google.*", "duckdb.*", "confluent_kafka.*"]
 ignore_missing_imports = true
