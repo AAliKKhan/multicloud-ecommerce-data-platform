@@ -1,0 +1,14 @@
+# Stricter, longer-lived "prod-like" demonstration environment.
+project_id       = "REPLACE-your-prodlike-project"
+environment      = "prod-like"
+region           = "us-central1"
+location         = "US"
+raw_bucket_name  = "REPLACE-with-a-globally-unique-name-prodlike-raw-gcs"
+bigquery_dataset = "ecomm_prodlike"
+
+enable_versioning                  = true
+noncurrent_version_expiration_days = 90
+force_destroy                      = false
+
+# analyst_members = ["group:analysts@example.com"]
+# kms_key_name    = "projects/REPLACE/locations/us/keyRings/REPLACE/cryptoKeys/REPLACE"

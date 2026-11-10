@@ -1,0 +1,17 @@
+# Copy to dev.tfvars (git-ignored) and edit. Never put credentials here.
+project_id       = "REPLACE-your-dev-project"
+environment      = "dev"
+region           = "us-central1"
+location         = "US"
+raw_bucket_name  = "REPLACE-with-a-globally-unique-name-dev-raw-gcs"
+bigquery_dataset = "ecomm_dev"
+
+# Cost caps for a throwaway demo environment.
+raw_expiration_days                = 30
+noncurrent_version_expiration_days = 7
+table_expiration_days              = 30
+force_destroy                      = true # sandbox only, so `terraform destroy` works
+
+# Optional budget (needs a billing account you can administer).
+# billing_account_id = "000000-000000-000000"
+# monthly_budget_usd = 5

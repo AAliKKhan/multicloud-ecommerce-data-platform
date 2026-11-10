@@ -1,0 +1,8 @@
+# Remote state for shared / team use. Copy to backend.tf and fill in.
+# The state bucket must be created separately, private, versioned and encrypted.
+terraform {
+  backend "gcs" {
+    bucket = "REPLACE-state-bucket"
+    prefix = "ecomm/gcp/dev"
+  }
+}
