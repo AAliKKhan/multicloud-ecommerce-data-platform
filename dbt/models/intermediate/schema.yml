@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: int_order_payment_status
+    description: >
+      Grain: one row per order with at least one payment event (key order_id).
+      Current payment state derived from the payment ledger.
+      payment_status: refunded, partially_refunded, captured, failed, authorized.
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: payment_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [refunded, partially_refunded, captured, failed, authorized, unpaid]
+
+  - name: int_order_items_enriched
+    description: >
+      Grain: one row per order line (key order_item_id) with product attributes and
+      the order-level is_qualifying flag.
+    columns:
+      - name: order_item_id
+        data_tests: [unique, not_null]
+      - name: is_qualifying
+        data_tests: [not_null]
+
+  - name: int_daily_inventory_movements
+    description: "Grain: one row per (movement_date, product_id, location_id)."
+    columns:
+      - name: product_id
+        data_tests: [not_null]
