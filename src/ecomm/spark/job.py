@@ -42,7 +42,14 @@ from ecomm.contracts.events import TOPIC_SUFFIXES
 from ecomm.logging_utils import get_logger, log
 from ecomm.spark.dedup import dedup_step
 from ecomm.spark.rows import classify_value, dedup_key
-from ecomm.spark.sink import BatchRow, SinkConfig, process_batch, record_progress
+from ecomm.spark.sink import (
+    BatchRow,
+    OffsetGapError,
+    SinkConfig,
+    load_offset_plan,
+    process_batch,
+    record_progress,
+)
 from ecomm.storage.local import LocalObjectStore
 
 # Columns carried through the stateful step (must match OUT_FIELDS below).
@@ -111,7 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-offsets-per-trigger", type=int, default=5000)
     parser.add_argument("--starting-offsets", choices=["earliest", "latest"], default="earliest")
-    parser.add_argument("--dedup-retention-hours", type=float, default=24.0)
+    parser.add_argument(
+        "--dedup-retention-hours",
+        type=float,
+        default=24.0,
+        help="how long an event_id is remembered, as event time on the Kafka timestamp. It must "
+        "also be at least the time span of the data read at once: Spark drops rows older than "
+        "its watermark, and the job then FAILS (messages stay in Kafka). Replaying a historical "
+        "window therefore needs at least the window's length, e.g. 96 for 3 days.",
+    )
     parser.add_argument(
         "--late-threshold-minutes",
         type=int,
@@ -319,7 +334,15 @@ def run(cfg: JobConfig) -> int:
             )
             for r in (row.asDict() for row in batch_df.collect())
         ]
-        outcome = process_batch(rows, batch_id, sink_cfg)
+        plan = None
+        if sink_cfg.fail_on_offset_gap:
+            try:
+                plan = load_offset_plan(cfg.checkpoint_dir, batch_id)
+            except (OSError, ValueError) as exc:  # no silent skip: completeness is unverifiable
+                raise OffsetGapError(
+                    f"cannot verify batch {batch_id} against Spark's planned offsets: {exc}"
+                ) from exc
+        outcome = process_batch(rows, batch_id, sink_cfg, plan)
         duration_ms = int((time.monotonic() - started) * 1000)
         if rows:
             record_progress(sink_cfg.control_store, cfg.source, outcome, duration_ms)
