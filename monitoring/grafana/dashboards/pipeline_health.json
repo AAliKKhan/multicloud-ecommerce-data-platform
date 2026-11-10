@@ -1,0 +1,110 @@
+{
+  "uid": "ecomm-pipeline-health",
+  "title": "E-commerce pipeline health (synthetic data)",
+  "description": "Pipeline and infrastructure health first, business totals clearly separated at the bottom. NOT YET LOADED INTO GRAFANA (Docker phase); queries are checked by tests against the exporter.",
+  "tags": ["ecomm", "pipeline"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Seconds since last successful load",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 43200 }, { "color": "red", "value": 86400 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "ecomm_seconds_since_last_successful_load" } ]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Batches PARTIAL or FAILED",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum(ecomm_batches{status=~\"PARTIAL|FAILED\"})" } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Quarantine (dead-letter) rate",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 0.02 }, { "color": "red", "value": 0.05 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "ecomm_quarantine_rate" } ]
+    },
+    {
+      "id": 4, "type": "stat", "title": "S3 / GCS batches mismatched",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "ecomm_parity_batches_mismatched" } ]
+    },
+    {
+      "id": 5, "type": "bargauge", "title": "Raw batches by status",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [ { "refId": "A", "expr": "ecomm_batches", "legendFormat": "{{status}}" } ]
+    },
+    {
+      "id": 6, "type": "bargauge", "title": "Ingest outcomes",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [
+        { "refId": "A", "expr": "ecomm_events_valid", "legendFormat": "valid" },
+        { "refId": "B", "expr": "ecomm_events_duplicates", "legendFormat": "duplicates dropped" },
+        { "refId": "C", "expr": "ecomm_events_quarantined", "legendFormat": "quarantined" },
+        { "refId": "D", "expr": "ecomm_events_late", "legendFormat": "late (kept)" }
+      ]
+    },
+    {
+      "id": 7, "type": "bargauge", "title": "Latest data-quality run",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [ { "refId": "A", "expr": "ecomm_quality_checks", "legendFormat": "{{status}}" } ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Warehouse loads: rows inserted vs. skipped as duplicates",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "ecomm_load_rows_inserted", "legendFormat": "inserted" },
+        { "refId": "B", "expr": "ecomm_load_rows_duplicate", "legendFormat": "duplicate (idempotent replay)" }
+      ]
+    },
+    {
+      "id": 9, "type": "bargauge", "title": "Warehouse events by type",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "horizontal", "displayMode": "basic" },
+      "targets": [ { "refId": "A", "expr": "ecomm_warehouse_events", "legendFormat": "{{event_type}}" } ]
+    },
+    {
+      "id": 10, "type": "row", "title": "Business totals (synthetic data, separate from pipeline health)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }, "collapsed": false, "panels": []
+    },
+    {
+      "id": 11, "type": "stat", "title": "Net sales (USD)",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "ecomm_business_net_sales_usd" } ]
+    },
+    {
+      "id": 12, "type": "stat", "title": "Qualifying orders",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "ecomm_business_qualifying_orders" } ]
+    },
+    {
+      "id": 13, "type": "stat", "title": "Marts readable (1 = yes)",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "ecomm_business_metrics_available" } ]
+    }
+  ]
+}
