@@ -49,3 +49,4 @@ dbt/logs/
 .DS_Store
 Thumbs.db
 dbt/.user.yml 
+/tools/ 
