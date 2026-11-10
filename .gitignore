@@ -48,3 +48,4 @@ dbt/logs/
 .vscode/
 .DS_Store
 Thumbs.db
+dbt/.user.yml 
