@@ -64,12 +64,14 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "SIM", "N", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "S608"]
+# SQL is built only from validated identifiers and literals (see safe_identifier).
+"src/ecomm/warehouse/**" = ["S608"]
 # Seeded PRNG is intentional: reproducible synthetic data, nothing cryptographic.
 "src/ecomm/generator/**" = ["S311"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 files = ["src"]
 plugins = ["pydantic.mypy"]

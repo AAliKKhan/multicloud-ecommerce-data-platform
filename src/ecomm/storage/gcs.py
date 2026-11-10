@@ -45,7 +45,7 @@ class GCSObjectStore:
         try:
             import google.auth
             from google.auth.exceptions import DefaultCredentialsError
-            from google.cloud import storage
+            from google.cloud import storage  # type: ignore[attr-defined,unused-ignore]
         except ImportError as exc:
             raise StorageConfigError(
                 "google-cloud-storage is not installed; run: uv sync --extra gcp"
