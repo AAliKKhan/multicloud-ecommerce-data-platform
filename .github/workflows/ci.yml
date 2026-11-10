@@ -108,7 +108,41 @@ jobs:
         run: docker compose up -d --wait kafka
 
       - name: Kafka integration tests
-        run: uv run pytest -m integration -v
+        run: uv run pytest tests/integration/test_kafka.py -v
+
+      - name: Broker logs (on failure)
+        if: failure()
+        run: docker compose logs kafka --tail 100
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose down -v
+
+  spark:
+    name: Spark streaming integration (Docker Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with the kafka extra)
+        run: uv sync --locked --all-extras
+
+      # Python 3.11 + Java 17 + PySpark + the Kafka connector jars (several minutes).
+      - name: Build the Spark image
+        run: docker compose --profile spark build spark
+
+      - name: Start Kafka
+        run: docker compose up -d --wait kafka
+
+      # Crash right after a commit, restart, rerun with nothing new, compare with the
+      # reference ingest, load the warehouse, plus the too-short-retention regression test.
+      - name: Spark integration tests
+        run: uv run pytest tests/integration/test_spark.py -v
 
       - name: Broker logs (on failure)
         if: failure()
