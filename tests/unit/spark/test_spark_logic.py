@@ -22,8 +22,10 @@ from ecomm.spark.sink import (
     BatchCommitError,
     BatchConflictError,
     BatchRow,
+    OffsetGapError,
     SinkConfig,
     batch_id_for,
+    find_offset_gaps,
     process_batch,
 )
 from ecomm.storage.testing import FlakyObjectStore, InMemoryObjectStore
@@ -363,6 +365,49 @@ def test_quarantine_write_failure_is_retried_then_raised_for_spark_to_retry() ->
     with pytest.raises(BatchCommitError, match="quarantine write to gcs"):
         process_batch([bad], 0, cfg)
     assert sleeps == [0.5, 1.0]  # bounded exponential backoff, then give up
+
+
+def test_missing_offsets_inside_a_batch_fail_loudly_before_anything_is_written() -> None:
+    cfg, s3, gcs, control = sink()
+    batch = run_stateful_dedup(chunks(rows_from_emissions(), 200), {})[0]
+    orders = sorted((r for r in batch if r.topic == "commerce.orders"), key=lambda r: r.offset)
+    victim = orders[len(orders) // 2]  # strictly inside the range: a real hole, not an edge
+    holed = [
+        r
+        for r in batch
+        if r is not victim and not (r.topic == victim.topic and r.offset == victim.offset + 1)
+    ]  # drop a row mid-range
+    with pytest.raises(OffsetGapError, match="gap"):
+        process_batch(holed, 0, cfg)
+    assert not s3.objects and not gcs.objects and not control.objects
+
+
+def test_offset_gap_detection_is_per_partition_and_can_be_disabled() -> None:
+    def row(partition: int, offset: int) -> BatchRow:
+        return BatchRow(
+            "t",
+            partition,
+            offset,
+            "k",
+            b"{",
+            1_000,
+            STATUS_INVALID,
+            None,
+            None,
+            None,
+            False,
+            "INVALID_JSON",
+            "x",
+            False,
+        )
+
+    # partition 0 has 0,1 and partition 1 has 7,8: consecutive within each, no gap
+    assert find_offset_gaps([row(0, 0), row(0, 1), row(1, 7), row(1, 8)]) == []
+    assert find_offset_gaps([row(0, 0), row(0, 3)]) == ["t/0: offsets 1..2 missing"]
+
+    cfg, *_ = sink()
+    cfg.fail_on_offset_gap = False
+    assert process_batch([row(0, 0), row(0, 3)], 0, cfg).quarantined == 2
 
 
 def test_empty_batch_is_a_noop() -> None:
