@@ -266,6 +266,51 @@ def test_kafka_offsets_are_recorded_per_batch_and_cover_every_message(scenario: 
     assert s3.list_objects("manifests/")
 
 
+# --- regression: a watermark that is too short must FAIL the job, never lose messages quietly -------------
+
+
+def test_too_short_a_retention_fails_loudly_instead_of_dropping_messages_silently() -> None:
+    """Before the offset-plan check, Spark discarded rows older than its watermark and the job
+    reported success with fewer messages than Kafka held (15 of 1490 in the real run)."""
+    if shutil.which("docker") is None or docker("image", "inspect", IMAGE).returncode != 0:
+        pytest.skip("docker or the Spark image is not available")
+    if not check_health(BOOTSTRAP, timeout_s=3.0).ok:
+        pytest.skip(f"no Kafka broker at {BOOTSTRAP}")
+
+    prefix = f"wmk{uuid.uuid4().hex[:8]}"
+    topics = expected_topics(prefix)
+    ensure_topics(BOOTSTRAP, topics, partitions=3)
+    host_dir = REPO / "data" / "spark" / "itest" / prefix
+    try:
+        publisher = EventPublisher(create_producer(BOOTSTRAP), flush_timeout_s=60)
+        report = publisher.publish(
+            PublishItem(
+                f"{prefix}.{e.topic.split('.', 1)[1]}",
+                e.key,
+                e.value,
+                extract_event_id(e.value),
+                int(e.arrival_time.timestamp() * 1000),
+            )
+            for e in generate(CONFIG).emissions
+        )
+        assert report.ok
+        # A watermark of ~4 seconds of event time: later batches contain rows older than it.
+        result = run_job(prefix, "--dedup-retention-hours", "0.001")
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, tail(result)
+        assert "lost messages between Kafka and the sink" in output, tail(result)
+        lake = LocalObjectStore(host_dir / "lake" / "s3-local", name="s3-local")
+        committed = list_batch_ids(lake, "commerce")
+        # Batches committed before the failing one are complete and contiguous from 0.
+        assert committed == [f"itest-b{i:05d}" for i in range(len(committed))]
+        gcs = LocalObjectStore(host_dir / "lake" / "gcs-local", name="gcs-local")
+        reports = reconcile_all({"s3-local": lake, "gcs-local": gcs}, "commerce")
+        assert all(r.ok for r in reports)  # whatever was committed is consistent on both sides
+    finally:
+        delete_topics(BOOTSTRAP, topics)
+        shutil.rmtree(host_dir, ignore_errors=True)
+
+
 # --- all the way to the warehouse: no double counting in business totals --------------------------------
 
 
