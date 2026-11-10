@@ -4,9 +4,12 @@ Spark calls this once per ``event_id`` per micro-batch through
 ``applyInPandasWithState``; the state (last-seen time) lives in the checkpoint,
 so a restarted query keeps recognising duplicates seen before the restart.
 
-State is bounded: it expires ``retention_ms`` after an event ID was last seen.
-A duplicate that arrives after that horizon is *not* caught here; the
-idempotent warehouse ``MERGE`` on ``event_id`` still removes it (ADR 0001).
+State is bounded: it expires once the stream's event-time watermark (the newest
+Kafka timestamp minus the retention) passes ``last seen + retention``. A duplicate
+that arrives after that horizon is *not* caught here; the idempotent warehouse
+``MERGE`` on ``event_id`` still removes it (ADR 0001).
+
+All times are Kafka message timestamps in milliseconds (the arrival time).
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ def dedup_step(
     rows: list[Row], state_last_seen_ms: int | None, now_ms: int
 ) -> tuple[list[Row], int | None]:
     """Mark each row ``is_duplicate`` and return the new state.
+
+    ``now_ms`` is the newest Kafka timestamp among this key's rows in the batch.
 
     ``rows`` are the rows of one key in this micro-batch. They are processed in
     ``(partition, offset)`` order so the first copy seen is deterministic. The

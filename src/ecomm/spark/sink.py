@@ -49,6 +49,10 @@ class BatchCommitError(RuntimeError):
     """The batch did not reach COMPLETE; Spark must retry it."""
 
 
+class OffsetGapError(RuntimeError):
+    """Kafka offsets inside a micro-batch are not consecutive: messages went missing."""
+
+
 @dataclass(frozen=True)
 class BatchRow:
     topic: str
@@ -74,6 +78,10 @@ class SinkConfig:
     stores: Mapping[str, ObjectStore]
     control_store: ObjectStore
     required: Sequence[str] | None = None
+    # The pipeline never produces transactional markers or compacts topics, so offsets
+    # of one partition within a batch must be consecutive. A hole means Spark dropped
+    # rows (e.g. older than its watermark): refuse loudly instead of losing data silently.
+    fail_on_offset_gap: bool = True
     retry: RetryPolicy = field(default_factory=lambda: RetryPolicy(max_attempts=4))
     sleep: Callable[[float], None] = time.sleep
 
@@ -171,12 +179,33 @@ def _write_quarantine(cfg: SinkConfig, batch_id: str, payload: bytes) -> None:
             )
 
 
+def find_offset_gaps(rows: Sequence[BatchRow]) -> list[str]:
+    """Human-readable descriptions of holes in the per-partition offsets of ``rows``.
+
+    ``rows`` must be sorted by (topic, partition, offset)."""
+    gaps: list[str] = []
+    for previous, current in zip(rows, rows[1:], strict=False):
+        same = previous.topic == current.topic and previous.partition == current.partition
+        if same and current.offset != previous.offset + 1:
+            gaps.append(
+                f"{current.topic}/{current.partition}: offsets {previous.offset + 1}"
+                f"..{current.offset - 1} missing"
+            )
+    return gaps
+
+
 def process_batch(rows: Iterable[BatchRow], batch_number: int, cfg: SinkConfig) -> BatchOutcome:
     """Land one micro-batch. Safe to call again for the same ``batch_number``."""
     ordered = sorted(rows, key=lambda r: (r.topic, r.partition, r.offset))
     batch_id = batch_id_for(cfg.run_id, batch_number)
     if not ordered:
         return BatchOutcome(batch_id, 0, 0, 0, 0, 0, False, {})
+    if cfg.fail_on_offset_gap and (gaps := find_offset_gaps(ordered)):
+        raise OffsetGapError(
+            f"batch {batch_id}: {len(gaps)} gap(s) in Kafka offsets, e.g. {gaps[0]}. "
+            "Rows were dropped before reaching the sink (check numRowsDroppedByWatermark, "
+            "or raise --dedup-retention-hours)."
+        )
 
     ingested_at = datetime.fromtimestamp(max(r.ts_ms for r in ordered) / 1000, UTC)
     new_events: list[IngestedEvent] = []
