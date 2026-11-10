@@ -104,7 +104,8 @@ flowchart LR
 | Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Client built, unverified |
 | Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | 19 models, 85+ tests; runs on DuckDB, BigQuery SQL syntax-checked | In use |
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | Scheduling, backfills | Planned |
-| Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Cloud resources; local stack | Planned |
+| Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
+| Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Kafka, Spark, Airflow, monitoring containers | Planned |
 | Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Metrics and dashboards | Planned |
 | BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Business dashboards over marts | Planned |
 
@@ -134,7 +135,7 @@ services are integrated last.
 | M2 | Kafka producer and local broker (Docker) | Planned |
 | M3 | Spark streaming validation, dedup, quarantine | Planned |
 | M4 | Storage abstraction, manifests, cross-cloud parity | Done (cloud adapters unverified) |
-| M5 | Terraform for AWS and GCP (plan only, never applied by default) | Planned |
+| M5 | Terraform for AWS and GCP (validated, never applied) | Done (`plan`/`apply` unverified) |
 | M6 | Idempotent warehouse loader (`MERGE`) | Done (DuckDB verified, BigQuery unverified) |
 | M7 | dbt staging, intermediate and mart models | Done (DuckDB verified, BigQuery syntax-checked only) |
 | M8 | Airflow DAGs | Planned |
@@ -208,9 +209,10 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | dbt models and tests | `dbt build` on DuckDB | 0 errors; warnings flag orphans from quarantined events |
 | Business metrics | Independent Python re-computation vs. marts | Match |
 | BigQuery SQL | Offline compile + sqlglot parse | Syntax only; **not run on BigQuery** |
+| Terraform (AWS, GCP) | `fmt`, `validate` and static security tests in CI | Passing; **never planned or applied** |
 
-Kafka, Spark, Airflow, monitoring, Terraform and the BI dashboard are not built
-yet. No cloud resource has been created and no cloud account is required.
+Kafka, Spark, Airflow, monitoring and the BI dashboard are not built yet. No
+cloud resource has been created and no cloud account is required.
 
 ## Design principles
 
@@ -234,6 +236,7 @@ yet. No cloud resource has been created and no cloud account is required.
   7. [Portfolio and demo](docs/07-PORTFOLIO-AND-DEMO.md)
 - [Data dictionary and metric definitions](docs/data-dictionary.md)
 - [Operations guide and runbooks](docs/operations.md)
+- [Infrastructure: Terraform, deploy and teardown](docs/infrastructure.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License

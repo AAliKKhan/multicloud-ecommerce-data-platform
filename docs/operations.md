@@ -70,7 +70,7 @@ replay the quarantined messages.
 | Warehouse loader and dbt models | Tested on DuckDB, with an independent metric cross-check |
 | BigQuery client and BigQuery SQL | **Unverified on real BigQuery.** DDL rendering and call flow are tested with a fake; the compiled SQL is parsed as BigQuery SQL offline (syntax only) |
 | Kafka, Spark, Airflow, Prometheus/Grafana, Metabase | Not built yet (Docker phase) |
-| Terraform | Not built yet; nothing has been applied anywhere |
+| Terraform | Validated and statically tested; **never planned or applied** (see [infrastructure](infrastructure.md)) |
 
 ## Cleaning up
 
