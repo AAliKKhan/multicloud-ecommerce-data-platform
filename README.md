@@ -129,7 +129,7 @@ services are integrated last.
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Repository, config validation, ADRs, CI | Done |
-| M1 | Seeded synthetic commerce generator and event contracts | In progress |
+| M1 | Seeded synthetic commerce generator and event contracts | Done |
 | M2 | Kafka producer and local broker (Docker) | Planned |
 | M3 | Spark streaming validation, dedup, quarantine | Planned |
 | M4 | Storage abstraction, manifests, cross-cloud parity | Planned |
@@ -158,6 +158,28 @@ uv run mypy              # type check
 
 Python is pinned to 3.12 (`>=3.11,<3.13`) because PySpark, Airflow and
 dbt-bigquery do not reliably support newer interpreters.
+
+## Generate synthetic data
+
+```bash
+uv run ecomm-generate --out data/fixtures/demo --orders 200 --seed 42
+```
+
+This writes four files (git-ignored under `data/`):
+
+| File | Content |
+|---|---|
+| `events.jsonl` | The arrival stream: `seq`, `arrival_time`, `topic`, `key` and the raw message `value` |
+| `labels.jsonl` | Ground truth per message (`duplicate`, `late`, `out_of_order`, `malformed`) for tests and demos only |
+| `products.jsonl` | Reference product catalogue |
+| `summary.json` | Counts by event type, topic and fault |
+
+The generator is fully deterministic for a given `--seed`. Fault rates are
+adjustable (`--malformed-rate`, `--late-rate`, `--out-of-order-rate`,
+`--duplicate-rate`). Without `--out` it streams records to stdout, paced by
+`--rate` events per second. Every well-formed message passes `parse_event`
+(the same validator the Spark job will use); every malformed one is rejected
+with a stable error code.
 
 ## Design principles
 
