@@ -98,14 +98,14 @@ flowchart LR
 | Local warehouse | ![DuckDB](https://img.shields.io/badge/DuckDB-FFF000?logo=duckdb&logoColor=black) | Local stand-in for BigQuery (same loader, same dbt models) | In use |
 | CI | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) | Lint, types, tests on every push | In use |
 | Broker | ![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?logo=apachekafka&logoColor=white) | Durable event transport (single-node KRaft) + Kafka UI | In use |
-| Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events | Planned |
+| Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events (Structured Streaming, one container) | In use |
 | Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds; local directories stand in today | Adapters built, cloud unverified |
 | Catalog | ![Glue](https://img.shields.io/badge/AWS_Glue_Catalog-FF9900?logo=amazonwebservices&logoColor=white) | Metadata for the S3 copy | Planned |
 | Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Client built, unverified |
 | Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | 19 models, 85+ tests; runs on DuckDB, BigQuery SQL syntax-checked | In use |
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | Scheduling, backfills | Planned |
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
-| Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Compose: Kafka + Kafka UI today; Spark, Airflow, monitoring next | Partly built |
+| Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Compose: Kafka, Kafka UI, Spark; Airflow, monitoring next | Partly built |
 | Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Exporter, alert rules and dashboard JSON written; the services themselves not run yet | Configs tested, services not run |
 | BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Static HTML dashboard today; Metabase planned | Stand-in built |
 
@@ -133,7 +133,7 @@ services are integrated last.
 | M0 | Repository, config validation, ADRs, CI | Done |
 | M1 | Seeded synthetic commerce generator and event contracts | Done |
 | M2 | Kafka producer and local broker (Docker) | Done (single-node KRaft; integration-tested against the real broker) |
-| M3 | Spark streaming validation, dedup, quarantine | Planned |
+| M3 | Spark streaming validation, dedup, quarantine | Done (single-node, `local[2]`; crash/restart and no-silent-loss integration-tested; throughput not benchmarked) |
 | M4 | Storage abstraction, manifests, cross-cloud parity | Done (cloud adapters unverified) |
 | M5 | Terraform for AWS and GCP (validated, never applied) | Done (`plan`/`apply` unverified) |
 | M6 | Idempotent warehouse loader (`MERGE`) | Done (DuckDB verified, BigQuery unverified) |
@@ -210,14 +210,14 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Business metrics | Independent Python re-computation vs. marts | Match |
 | BigQuery SQL | Offline compile + sqlglot parse | Syntax only; **not run on BigQuery** |
 | Terraform (AWS, GCP) | `fmt`, `validate` and static security tests in CI | Passing; **never planned or applied** |
+| Spark streaming job | Logic unit tests + real container: crash after commit, restart, rerun; counts equal the reference ingest; no event written twice; per-batch check against Spark's planned offsets | Passing; full demo: 1,490 of 1,490 Kafka messages accounted for |
 | Kafka producer | 31 unit tests (fake + real client with no broker) and 8 integration tests on the real broker | Passing: delivery, keys to partitions, per-key order, headers, failures visible |
 | Data-quality suite | 17 checks, healthy and deliberately broken runs, on real dbt output | Passing |
 | Metrics, alert rules, Grafana JSON | Exporter tests; alerts evaluated in a simulated failure | Passing; **Prometheus/Grafana not run** |
 | Business dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
 
-Spark streaming, Airflow, the running Prometheus/Grafana stack and Metabase are
-not built yet. No cloud resource has been created and no cloud account is
-required.
+Airflow, the running Prometheus/Grafana stack and Metabase are not built yet. No
+cloud resource has been created and no cloud account is required.
 
 ## Kafka (Docker)
 
@@ -231,6 +231,20 @@ uv run ecomm-kafka consume --topic orders --max 5
 
 A single-node broker: a development topology, not a fault-tolerant cluster.
 Details, topics and limits in [docs/docker.md](docs/docker.md).
+
+## Spark streaming (Docker)
+
+```bash
+docker compose --profile spark build spark       # first time: large download
+docker compose --profile spark run --rm spark --dedup-retention-hours 96   # drain Kafka, then exit
+uv run ecomm-load --demo-dir data/spark          # then load, dbt, quality, dashboard
+```
+
+Kafka to validated, de-duplicated raw files in two destinations, with manifests, a quarantine
+and per-batch statistics; restarts never double count. Spark silently drops rows older than
+its watermark, so every batch is verified against Spark's own planned offsets and fails
+loudly instead (a real run lost 15 messages before this check existed). Details, the
+retention rule and measured performance: [docs/spark.md](docs/spark.md).
 
 ## Quality, metrics and dashboard
 
@@ -268,6 +282,7 @@ Details in [observability and quality](docs/observability-and-quality.md).
 - [Infrastructure: Terraform, deploy and teardown](docs/infrastructure.md)
 - [Data quality, observability and dashboard](docs/observability-and-quality.md)
 - [Docker stack: Kafka, topics, producer](docs/docker.md)
+- [Spark streaming job](docs/spark.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License

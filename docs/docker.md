@@ -4,8 +4,9 @@ This is a **development topology, not a highly available cluster**. Kafka is a
 single broker in KRaft mode (no ZooKeeper), so there is no broker fault
 tolerance and every replication factor is 1.
 
-Currently in the stack: Kafka, a one-shot topic-creation job, and Kafka UI.
-Spark, Airflow, MinIO, Prometheus, Grafana and Metabase are added in later steps.
+Currently in the stack: Kafka, a one-shot topic-creation job, Kafka UI, and the Spark
+streaming job (profile `spark`, started on demand: see [spark.md](spark.md)).
+Airflow, MinIO, Prometheus, Grafana and Metabase are added in later steps.
 
 ## Requirements
 
@@ -110,3 +111,7 @@ afterwards; they never touch `commerce.*`.
   load in progress`. It is transient and retried automatically.
 - **Data gone after `down -v`**: `-v` deletes the volume by design.
 - **Out of memory**: lower other containers' limits or raise the WSL2 cap.
+- **Kafka `unhealthy`, `docker` commands timing out, or a Spark job that never finishes a batch**:
+  the VM is starved (observed on an 8 GB host running Kafka, Kafka UI and Spark together).
+  Stop what you don't need (`docker compose stop kafka-ui`), run Spark alone with Kafka,
+  and if the broker stays unhealthy, `docker compose restart kafka` (its data is on a volume).
