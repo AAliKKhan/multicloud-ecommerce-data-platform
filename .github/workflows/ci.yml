@@ -85,3 +85,35 @@ jobs:
 
       - name: Validate
         run: terraform validate
+
+  kafka:
+    name: Kafka integration (Docker Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with the kafka extra)
+        run: uv sync --locked --all-extras
+
+      - name: Validate the compose file
+        run: docker compose config --quiet
+
+      # Only the broker is needed: the tests create and delete their own topics.
+      - name: Start Kafka
+        run: docker compose up -d --wait kafka
+
+      - name: Kafka integration tests
+        run: uv run pytest -m integration -v
+
+      - name: Broker logs (on failure)
+        if: failure()
+        run: docker compose logs kafka --tail 100
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose down -v
