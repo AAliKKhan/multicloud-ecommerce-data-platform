@@ -1,0 +1,12 @@
+# Remote state for shared / team use. Copy to backend.tf, fill in, then:
+#   terraform init -backend-config=...   (or edit the values below)
+# The state bucket must be created separately, private, versioned and encrypted.
+terraform {
+  backend "s3" {
+    bucket       = "REPLACE-state-bucket"
+    key          = "ecomm/aws/dev/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}

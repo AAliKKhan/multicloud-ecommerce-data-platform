@@ -1,0 +1,17 @@
+# Stricter, longer-lived "prod-like" demonstration environment.
+environment     = "prod-like"
+aws_region      = "us-east-1"
+raw_bucket_name = "REPLACE-with-a-globally-unique-name-prodlike-raw"
+
+enable_versioning                  = true
+noncurrent_version_expiration_days = 90
+force_destroy                      = false
+
+# Optional customer-managed key (otherwise SSE-S3).
+# kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/REPLACE"
+
+# Identities allowed to assume the pipeline role (no long-lived keys are created).
+# pipeline_principal_arns = ["arn:aws:iam::123456789012:role/REPLACE"]
+
+monthly_budget_usd  = 25
+budget_alert_emails = ["you@example.com"]

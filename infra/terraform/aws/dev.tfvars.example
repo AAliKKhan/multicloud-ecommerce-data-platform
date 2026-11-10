@@ -1,0 +1,12 @@
+# Copy to dev.tfvars (git-ignored) and edit. Never put credentials here.
+environment     = "dev"
+aws_region      = "us-east-1"
+raw_bucket_name = "REPLACE-with-a-globally-unique-name-dev-raw"
+
+# Cost caps for a throwaway demo bucket.
+raw_expiration_days                = 30
+noncurrent_version_expiration_days = 7
+force_destroy                      = true # sandbox only, so `terraform destroy` works
+
+monthly_budget_usd  = 5
+budget_alert_emails = ["you@example.com"]
