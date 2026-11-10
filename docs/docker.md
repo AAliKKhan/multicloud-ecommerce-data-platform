@@ -110,6 +110,12 @@ afterwards; they never touch `commerce.*`.
 - **Slow first connection**: the first run after a cold start logs `Coordinator
   load in progress`. It is transient and retried automatically.
 - **Data gone after `down -v`**: `-v` deletes the volume by design.
+- **`OffsetOutOfRange` in Spark, or messages that vanished from a topic**: Kafka applies retention
+  to *message timestamps*, and the generator stamps messages with simulated arrival times, so a
+  replayed historical window is already "old". Topics created without explicit retention use the
+  broker default (7 days) and get cleaned up. `docker/kafka/create-topics.sh` and
+  `ecomm-kafka topics --create` set 30 days; Spark fails loudly (`failOnDataLoss`) if unread data
+  was deleted. Tests create topics that never expire.
 - **Out of memory**: lower other containers' limits or raise the WSL2 cap.
 - **Kafka `unhealthy`, `docker` commands timing out, or a Spark job that never finishes a batch**:
   the VM is starved (observed on an 8 GB host running Kafka, Kafka UI and Spark together).
