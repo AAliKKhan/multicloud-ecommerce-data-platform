@@ -23,10 +23,11 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      # HOST: for clients on your machine (localhost:9092)
+      # HOST: for clients on your machine (127.0.0.1:9092; IPv4 on purpose, because
+      #       the port is published on the IPv4 loopback only)
       # INTERNAL: for other containers (kafka:19092)
       KAFKA_LISTENERS: HOST://:9092,INTERNAL://:19092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:${KAFKA_HOST_PORT:-9092},INTERNAL://kafka:19092
+      KAFKA_ADVERTISED_LISTENERS: HOST://127.0.0.1:${KAFKA_HOST_PORT:-9092},INTERNAL://kafka:19092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       # Single node: internal topics cannot be replicated.
@@ -36,6 +37,9 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       # Topics are created explicitly (kafka-init), never implicitly by a typo.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # The image defaults to /tmp, which is lost when the container is recreated.
+      # Data (and the KRaft metadata) must live on the named volume.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_LOG_RETENTION_HOURS: 168
       KAFKA_HEAP_OPTS: "-Xms384m -Xmx512m"
     volumes:
