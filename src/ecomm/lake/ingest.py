@@ -124,13 +124,18 @@ def quarantine_key(source: str, batch_id: str) -> str:
     return f"quarantine/source={source}/batch_id={batch_id}/part-0.jsonl"
 
 
+def quarantine_bytes(records: list[QuarantineRecord]) -> bytes:
+    """Deterministic serialisation of quarantine records (one JSON object per line)."""
+    lines = (json.dumps(r.to_json_dict(), sort_keys=True, separators=(",", ":")) for r in records)
+    return ("\n".join(lines) + "\n").encode()
+
+
 def write_quarantine(
     store: ObjectStore, source: str, batch_id: str, records: list[QuarantineRecord]
 ) -> str | None:
     """Persist quarantined messages (deterministic key, safe to retry)."""
     if not records:
         return None
-    lines = (json.dumps(r.to_json_dict(), sort_keys=True, separators=(",", ":")) for r in records)
     key = quarantine_key(source, batch_id)
-    store.write_object(key, ("\n".join(lines) + "\n").encode(), {"batch_id": batch_id})
+    store.write_object(key, quarantine_bytes(records), {"batch_id": batch_id})
     return key
