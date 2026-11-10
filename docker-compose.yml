@@ -85,5 +85,35 @@ services:
       JAVA_OPTS: "-Xms128m -Xmx384m"
     mem_limit: 640m
 
+  # Spark Structured Streaming job (profile "spark": not started by default).
+  #   docker compose --profile spark run --rm spark                 # drain the topics, then exit
+  #   docker compose --profile spark run --rm spark --trigger processing-time:10s
+  # Output goes to ./data/spark (lake/, checkpoints/) on the host. The source tree is
+  # bind-mounted read-only, so code edits need no image rebuild.
+  spark:
+    profiles: ["spark"]
+    image: ecomm-spark:3.5.6
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    container_name: ecomm-spark
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_TOPIC_PREFIX: ${KAFKA_TOPIC_PREFIX:-commerce}
+      LATE_EVENT_THRESHOLD_MINUTES: ${LATE_EVENT_THRESHOLD_MINUTES:-60}
+    volumes:
+      - ./src:/app/src:ro
+      - ./data/spark:/data
+    ports:
+      - "127.0.0.1:${SPARK_UI_PORT:-4040}:4040"
+    # Arguments after the service name are passed to the job (they would REPLACE a
+    # `command`, so the module is the entrypoint instead).
+    entrypoint: ["/usr/bin/tini", "--", "python", "-m", "ecomm.spark.job"]
+    mem_limit: 2g
+
 volumes:
   kafka-data:
