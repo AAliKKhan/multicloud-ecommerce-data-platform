@@ -129,12 +129,24 @@ def check_health(
     )
 
 
+# Matches docker/kafka/create-topics.sh. Retention is measured against message timestamps,
+# and the generator stamps messages with *simulated* arrival times (a replayed historical
+# window is already old), so the broker default of 7 days would delete unread data.
+DEFAULT_RETENTION_MS = 30 * 24 * 3600 * 1000
+NO_EXPIRY = -1
+
+
 def ensure_topics(
-    bootstrap_servers: str, topics: list[str], partitions: int = 3, timeout_s: float = 30.0
+    bootstrap_servers: str,
+    topics: list[str],
+    partitions: int = 3,
+    timeout_s: float = 30.0,
+    retention_ms: int = DEFAULT_RETENTION_MS,
 ) -> list[str]:
     """Create any missing topics (replication factor 1: single-broker dev stack).
 
-    Returns the names that were created. Existing topics are left untouched.
+    Returns the names that were created. Existing topics are left untouched. Pass
+    ``retention_ms=NO_EXPIRY`` for data that must never expire (tests).
     """
     kafka = _import_kafka()
     from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined,unused-ignore]
@@ -144,7 +156,15 @@ def ensure_topics(
     todo = [t for t in topics if t not in existing]
     created: list[str] = []
     futures = admin.create_topics(
-        [NewTopic(t, num_partitions=partitions, replication_factor=1) for t in todo],
+        [
+            NewTopic(
+                t,
+                num_partitions=partitions,
+                replication_factor=1,
+                config={"retention.ms": str(retention_ms)},
+            )
+            for t in todo
+        ],
         operation_timeout=timeout_s,
     )
     for name, future in futures.items():
