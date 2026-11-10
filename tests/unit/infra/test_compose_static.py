@@ -60,6 +60,25 @@ def test_ui_has_no_dynamic_config_and_points_at_the_internal_listener() -> None:
     assert env["DYNAMIC_CONFIG_ENABLED"] == "false"
 
 
+def test_spark_service_is_opt_in_bounded_and_read_only_for_the_source() -> None:
+    spark = SERVICES["spark"]
+    assert spark["profiles"] == ["spark"]  # never started by a plain `docker compose up`
+    assert spark["depends_on"]["kafka"]["condition"] == "service_healthy"
+    assert spark["restart"] == "no"  # a batch job: do not loop on failure
+    assert "./src:/app/src:ro" in spark["volumes"]  # the code is mounted read-only
+    assert spark["entrypoint"][-2:] == ["-m", "ecomm.spark.job"]  # args are passed to the job
+    assert spark["environment"]["KAFKA_BOOTSTRAP_SERVERS"] == "kafka:19092"  # internal listener
+    assert spark["mem_limit"] == "2g"
+
+
+def test_spark_dockerfile_pins_versions_and_bakes_in_the_connector() -> None:
+    text = (REPO / "docker" / "spark" / "Dockerfile").read_text(encoding="utf-8")
+    assert "FROM python:3.11-slim" in text  # the project needs Python >= 3.11
+    assert "SPARK_VERSION=3.5.6" in text and "spark-sql-kafka-0-10_2.12" in text
+    assert "numpy==1.26.4" in text  # PySpark 3.5 needs numpy < 2
+    assert (REPO / "docker" / "spark" / "dist" / ".gitkeep").is_file()
+
+
 def test_topic_script_matches_the_event_contract() -> None:
     created = set(re.findall(r"^create (\w+) (\d+)$", SCRIPT, re.MULTILINE))
     names = {name for name, _ in created}
