@@ -58,3 +58,30 @@ jobs:
       # the BigQuery SQL. No cloud credentials are used or required.
       - name: dbt end-to-end tests
         run: uv run pytest -m dbt -v
+
+  terraform:
+    name: Terraform fmt and validate (${{ matrix.stack }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [aws, gcp]
+    defaults:
+      run:
+        working-directory: infra/terraform/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      # No backend and no credentials: this never contacts a cloud account.
+      # `plan` and `apply` are deliberately NOT run in CI.
+      - name: Init (providers only)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
