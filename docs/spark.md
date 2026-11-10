@@ -15,7 +15,8 @@ docker compose up -d kafka kafka-init                         # broker + topics
 uv run ecomm-kafka produce --orders 200 --days 3 --seed 42 --products-csv data/spark/products.csv
 
 docker compose --profile spark build spark                    # first time only (large download)
-docker compose --profile spark run --rm spark                 # drain the topics, then exit
+# This stream spans 3 days of event time, so the retention must cover it (see below):
+docker compose --profile spark run --rm spark --dedup-retention-hours 96   # drain, then exit
 docker compose --profile spark run --rm spark --trigger processing-time:10s   # keep running
 ```
 
@@ -50,11 +51,33 @@ uv run ecomm-report  --demo-dir data/spark                     # data/spark/dash
   checkpoint.
 - **Late events are kept and flagged**, never dropped.
 - **Nothing is lost silently.** A batch that cannot reach both destinations raises and is retried
-  from the checkpoint. If Kafka offsets inside a batch are not consecutive (rows dropped by
-  Spark's watermark), the batch fails with `OffsetGapError`.
+  from the checkpoint. Before writing anything, every batch is checked against the offsets Spark
+  itself planned for it (read from the checkpoint): if even one planned message did not reach the
+  sink the batch fails with `OffsetGapError` and the messages stay in Kafka. See the next
+  section for why this exists.
 - **Deleting the checkpoint is refused unless you change the run id.** Batch numbers restart at
   0; a batch whose data differs from an already committed one fails with `BatchConflictError`
   instead of overwriting it. Use `--run-id` with a new value (or remove `data/spark`).
+
+## The retention requirement (a real bug this caught)
+
+Spark silently discards rows older than its watermark. The watermark follows the newest Kafka
+timestamp minus `--dedup-retention-hours` (default 24). In the first full demo run (a 3-day
+replay, default retention) Spark read the small `customers` partitions slowly while the large
+topics raced days ahead, then dropped the last 15 customer messages as too old. The job
+reported success with 1,475 of 1,490 messages, because the earlier gap check only looked
+inside a batch. The earlier integration test missed it because its window (18 h) was shorter
+than the retention.
+
+What changed: each batch is now verified against Spark's planned offsets (start and end per
+partition, from the checkpoint), so a drop anywhere, including a whole partition delivering
+nothing, fails the batch loudly. The corrected demo, with `--dedup-retention-hours 96`,
+processed all 1,490 messages (checked partition by partition) and is covered by a regression
+test that forces a too-short retention and expects a loud failure.
+
+Rule of thumb: the retention must be at least the time span of the data being read at once.
+With live traffic, Kafka timestamps are arrival times and partitions stay roughly in step, so
+the default is fine; replaying a historical window needs its full length.
 
 ## Performance and resources (measured, not tuned)
 

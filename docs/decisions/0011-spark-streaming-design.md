@@ -31,11 +31,17 @@ also run on a laptop with a ~5 GB container budget.
 - **Why event-time, not processing-time timeouts:** with processing-time timeouts Spark
   always schedules another batch, so an `availableNow` query never terminates (observed
   first-hand: >120 empty batches). Event-time timeouts do terminate.
-- **No silent loss from the watermark.** Spark drops rows older than its watermark. The
-  sink therefore checks that Kafka offsets inside each micro-batch are consecutive per
-  partition and fails the batch (`OffsetGapError`) otherwise. Edge rows of a batch cannot
-  be checked this way; the per-batch offset ranges are recorded so continuity across
-  batches can be audited (the integration test does).
+- **No silent loss from the watermark.** Spark drops rows older than its watermark before they
+  reach the sink. A first design only checked that offsets *inside* a batch were consecutive;
+  a real 3-day replay then lost 15 trailing `customers` messages while the job reported
+  success (the edge of a range has no neighbour to reveal a hole). The sink now verifies each
+  batch against Spark's own plan: the checkpoint's `offsets/<n>` (end per partition) and
+  `offsets/<n-1>` (start) must match the received rows exactly, including partitions that
+  delivered nothing, or the batch fails with `OffsetGapError` before anything is written.
+  If the plan cannot be read the batch also fails (no silent skip). The first batch's start
+  is unknown, so it uses the first received row; no watermark exists yet, so nothing can have
+  been dropped there. Operators must set the retention to at least the time span read at
+  once (96 h for a 3-day replay); live traffic is unaffected.
 - **Idempotent sink (exactly-once *effects*, not exactly-once delivery).**
   - `batch_id = <run_id>-b<spark micro-batch number>`; Spark replays a failed batch with
     the same number and the same offsets.
