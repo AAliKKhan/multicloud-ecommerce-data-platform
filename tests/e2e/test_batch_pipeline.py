@@ -25,7 +25,11 @@ from ecomm.contracts import ContractViolation, EventType, parse_event
 from ecomm.contracts import payloads as p
 from ecomm.demo import SOURCE, run_batch_demo
 from ecomm.generator import GeneratorConfig, generate
+from ecomm.observability.cli import snapshot_for_demo_dir
+from ecomm.quality import CheckStatus, QualityContext, persist_report, run_quality_suite
+from ecomm.report.dashboard import build_dashboard
 from ecomm.storage.local import LocalObjectStore
+from ecomm.warehouse.client import utcnow
 from ecomm.warehouse.duckdb_client import DuckDBClient
 from ecomm.warehouse.loader import WarehouseLoader
 
@@ -262,3 +266,66 @@ def test_replaying_loads_and_rebuilding_changes_nothing(pipeline: dict[str, Any]
         )
         == before
     )
+
+
+# --- quality, metrics and dashboard on the REAL dbt output ----------------------------------
+
+
+def test_quality_suite_passes_on_the_real_marts(pipeline: dict[str, Any]) -> None:
+    root: Path = pipeline["root"] / "demo"
+    s3 = LocalObjectStore(root / "lake" / "s3-local", name="s3-local")
+    gcs = LocalObjectStore(root / "lake" / "gcs-local", name="gcs-local")
+    control = LocalObjectStore(root / "lake" / "control", name="control")
+    client = DuckDBClient(root / "warehouse.duckdb")
+    try:
+        ctx = QualityContext(
+            client=client,
+            source=SOURCE,
+            now=utcnow(),
+            primary_store=s3,
+            lake_stores={"s3-local": s3, "gcs-local": gcs},
+            control_store=control,
+        )
+        report = run_quality_suite(ctx)
+        persist_report(report, client, control, SOURCE)
+    finally:
+        client.close()
+    assert report.ok, report.format_text()
+    assert report.count(CheckStatus.SKIP) == 0
+    for check_id in (
+        "raw.event_id_unique",
+        "marts.amounts_in_bounds",
+        "marts.payments_reconcile_to_orders",
+        "marts.daily_sales_reconcile_to_orders",
+        "reconcile.warehouse_row_count",
+        "parity.cross_cloud",
+    ):
+        assert report.get(check_id).status is CheckStatus.PASS, check_id
+
+
+def test_business_metrics_are_exported_and_match_the_oracle(pipeline: dict[str, Any]) -> None:
+    expected = expected_metrics(CONFIG)["daily"]
+    snap = snapshot_for_demo_dir(pipeline["root"] / "demo")
+    assert snap.business_available
+    assert snap.business_orders == sum(d["orders"] for d in expected.values())
+    assert snap.business_net_sales == pytest.approx(float(sum(d["net"] for d in expected.values())))
+    assert snap.quality_checks["FAIL"] == 0 and snap.quality_last_run_ts is not None
+
+
+def test_dashboard_shows_the_oracle_figures(pipeline: dict[str, Any]) -> None:
+    expected = expected_metrics(CONFIG)
+    net = sum(d["net"] for d in expected["daily"].values())
+    orders = sum(d["orders"] for d in expected["daily"].values())
+    root: Path = pipeline["root"] / "demo"
+    client = DuckDBClient(root / "warehouse.duckdb", read_only=True)
+    try:
+        out = build_dashboard(
+            client, root / "dashboard.html", utcnow(), LocalObjectStore(root / "lake" / "control")
+        )
+    finally:
+        client.close()
+    html = out.read_text(encoding="utf-8")
+    assert f"${net:,.2f}" in html
+    assert f">{orders:,}<" in html
+    assert "synthetic" in html.lower() and "<script" not in html
+    assert "Latest quality run" in html  # the persisted quality report is surfaced
