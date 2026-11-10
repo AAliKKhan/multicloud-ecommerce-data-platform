@@ -14,8 +14,9 @@ concurrency:
 
 jobs:
   python:
+    name: Lint, types and unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -23,8 +24,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies (locked)
-        run: uv sync --locked
+      - name: Install dependencies (locked, with cloud extras and dbt)
+        run: uv sync --locked --all-extras
 
       - name: Ruff lint
         run: uv run ruff check .
@@ -36,4 +37,24 @@ jobs:
         run: uv run mypy
 
       - name: Unit tests
-        run: uv run pytest -m "not integration and not cloud" --cov=ecomm --cov-report=term-missing
+        run: uv run pytest -m "not integration and not cloud and not dbt" --cov=ecomm --cov-report=term-missing
+
+  dbt:
+    name: dbt build (DuckDB) and BigQuery syntax check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with cloud extras and dbt)
+        run: uv sync --locked --all-extras
+
+      # Runs the full Docker-free pipeline, a real `dbt build` on DuckDB, an
+      # independent metric cross-check, a replay test and an offline compile of
+      # the BigQuery SQL. No cloud credentials are used or required.
+      - name: dbt end-to-end tests
+        run: uv run pytest -m dbt -v
