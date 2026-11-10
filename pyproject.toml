@@ -79,6 +79,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N", "S"]
 "tests/**" = ["S101", "S608", "E501"]  # long SQL/regex literals are clearer unwrapped
 # HTML/CSS/SVG template strings and operator hint text read better unwrapped.
 "src/ecomm/report/*.py" = ["E501"]
+# PySpark's own conventions: `functions as F`, `types as T`; long usage lines in the docstring.
+"src/ecomm/spark/job.py" = ["N812", "E501"]
 "src/ecomm/lake/quarantine_cli.py" = ["E501"]
 # SQL is built only from validated identifiers and literals (see safe_identifier).
 "src/ecomm/warehouse/**" = ["S608"]
@@ -96,5 +98,19 @@ files = ["src"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "google.*", "duckdb.*", "confluent_kafka.*"]
+module = [
+    "boto3.*",
+    "botocore.*",
+    "google.*",
+    "duckdb.*",
+    "confluent_kafka.*",
+    "pyspark.*",
+    "pandas.*",
+]
 ignore_missing_imports = true
+
+# The Spark job only runs inside the Spark container (PySpark and its decorators are
+# untyped there); its logic lives in the strictly typed, unit-tested sibling modules.
+[[tool.mypy.overrides]]
+module = "ecomm.spark.job"
+ignore_errors = true
