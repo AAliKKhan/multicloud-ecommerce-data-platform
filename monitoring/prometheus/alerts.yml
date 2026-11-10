@@ -1,0 +1,65 @@
+# Alert rules for the pipeline. NOT YET RUN in Prometheus (Docker phase).
+# tests/unit/observability checks that every metric referenced here is exposed
+# and that each alert condition becomes true in a simulated failure.
+groups:
+  - name: ecomm-pipeline
+    rules:
+      - alert: PipelineStale
+        expr: ecomm_seconds_since_last_successful_load > 86400
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: No successful warehouse load for more than 24 hours.
+          runbook: docs/operations.md#runbooks (pipeline is stale)
+
+      - alert: BatchesNotComplete
+        expr: ecomm_batches{status=~"PARTIAL|FAILED"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A raw batch is PARTIAL or FAILED (one destination is not committed).
+          runbook: docs/operations.md#runbooks (a cloud destination failed)
+
+      - alert: WarehouseLoadFailures
+        expr: ecomm_load_attempts{status="FAILED"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: At least one warehouse load attempt failed; check raw.load_audit.
+
+      - alert: HighQuarantineRate
+        expr: ecomm_quarantine_rate > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 5% of messages are being quarantined (dead-letter rate).
+          runbook: inspect with `ecomm-quarantine`
+
+      - alert: CloudParityMismatch
+        expr: ecomm_parity_batches_mismatched > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: S3 and GCS copies of at least one batch disagree.
+          runbook: docs/operations.md#runbooks (a cloud destination failed)
+
+      - alert: DataQualityChecksFailing
+        expr: ecomm_quality_checks{status="FAIL"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The latest data-quality run has failing checks.
+
+      - alert: MetricsCollectionBroken
+        expr: sum(ecomm_scrape_errors) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: A pipeline metrics section failed to collect.

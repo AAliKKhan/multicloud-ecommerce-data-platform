@@ -1,0 +1,23 @@
+# Prometheus scrape configuration. NOT YET RUN: Prometheus is part of the
+# Docker phase. The metric names used here and in alerts.yml are verified by
+# tests against the exporter (tests/unit/observability).
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Pipeline + business metrics from `ecomm-metrics --serve 9108`.
+  # Inside Docker on Windows/macOS the host is reachable as host.docker.internal.
+  - job_name: ecomm-pipeline
+    static_configs:
+      - targets: ["host.docker.internal:9108"]
+        labels:
+          environment: local
+
+  # Added in the Docker phase, when the services exist:
+  #   - kafka exporter (consumer lag, messages in/out)
+  #   - Spark driver /metrics/prometheus (input rows, batch duration)
+  #   - Airflow StatsD exporter (DAG/task duration, retries, failures)
