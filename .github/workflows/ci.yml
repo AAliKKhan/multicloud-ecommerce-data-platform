@@ -260,3 +260,46 @@ jobs:
       - name: Stop and remove containers and volumes
         if: always()
         run: docker compose --profile monitoring down -v
+
+  bi:
+    name: Metabase dashboard (real Metabase in Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with extras)
+        run: uv sync --locked --all-extras
+
+      - name: Validate the compose file with the bi profile
+        run: docker compose --profile bi config --quiet
+
+      # A real warehouse to publish, and random secrets (database roles, Metabase admin).
+      - name: Generate demo data and the BI secrets
+        run: |
+          uv run ecomm-demo --out data/demo --orders 120 --days 3 --batches 3 > /dev/null
+          python docker/bi/generate_env.py
+
+      - name: Start Postgres and Metabase
+        run: docker compose --profile bi up -d --wait --wait-timeout 420 metabase-postgres metabase
+
+      # Publishing and provisioning are the product: the integration tests then check that the
+      # dashboard's numbers equal the marts, that the reader role is read-only, and that the API
+      # refuses anonymous callers.
+      - name: Publish the marts and provision the dashboard
+        run: uv run ecomm-bi all
+
+      - name: Dashboard numbers, idempotence, read-only role, API access
+        run: uv run pytest tests/integration/test_bi.py -v
+
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose --profile bi logs --tail 80
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose --profile bi down -v
