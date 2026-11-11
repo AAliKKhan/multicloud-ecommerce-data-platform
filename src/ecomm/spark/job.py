@@ -21,6 +21,12 @@ Local substitutes: the two destinations are directories (``s3-local`` and ``gcs-
 under ``--lake-dir``; they stand in for S3 and GCS and use the same layout as the demo,
 so the loader, quality checks and metrics work on this output unchanged.
 
+With ``ECOMM_S3_BACKEND=minio`` the S3 destination is instead a bucket on a MinIO server, reached
+through the same S3 adapter (see :mod:`ecomm.lake.stores` and docs/minio.md); the GCS destination,
+the control store and the checkpoint stay under ``--lake-dir`` / ``--checkpoint-dir``. Both
+destinations are probed before Spark starts, so an unreachable one fails in seconds, not after the
+JVM and the first micro-batch.
+
 PySpark is imported lazily so this module (arguments, config) is importable without it.
 """
 
@@ -34,12 +40,14 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Any
 
 from ecomm.contracts.events import TOPIC_SUFFIXES
+from ecomm.lake.stores import open_lake_in
 from ecomm.logging_utils import get_logger, log
 from ecomm.spark.dedup import dedup_step
 from ecomm.spark.rows import classify_value, dedup_key
@@ -51,7 +59,7 @@ from ecomm.spark.sink import (
     process_batch,
     record_progress,
 )
-from ecomm.storage.local import LocalObjectStore
+from ecomm.storage.interface import StorageConfigError, StorageError
 
 # Columns carried through the stateful step (must match OUT_FIELDS below).
 COLUMNS = [
@@ -168,13 +176,30 @@ def config_from_args(args: argparse.Namespace) -> JobConfig:
     )
 
 
-def make_sink_config(cfg: JobConfig) -> SinkConfig:
-    stores = {
-        "s3-local": LocalObjectStore(cfg.lake_dir / "s3-local", name="s3-local"),
-        "gcs-local": LocalObjectStore(cfg.lake_dir / "gcs-local", name="gcs-local"),
-    }
-    control = LocalObjectStore(cfg.lake_dir / "control", name="control")
-    return SinkConfig(source=cfg.source, run_id=cfg.run_id, stores=stores, control_store=control)
+def make_sink_config(cfg: JobConfig, env: Mapping[str, str] | None = None) -> SinkConfig:
+    """The raw-zone destinations and control store for this run.
+
+    Which S3 side is used (a local directory, or a MinIO bucket) is decided in one place,
+    :func:`ecomm.lake.stores.open_lake_in`, from ``ECOMM_S3_BACKEND``.
+    """
+    lake = open_lake_in(cfg.lake_dir, env)
+    return SinkConfig(
+        source=cfg.source, run_id=cfg.run_id, stores=lake.destinations, control_store=lake.control
+    )
+
+
+def check_destinations(sink_cfg: SinkConfig) -> None:
+    """Raise :class:`StorageError` naming the first destination that cannot be listed.
+
+    A cheap probe that needs only the permission the pipeline already has (list under a pipeline
+    prefix). It runs before Spark starts: the alternative is a JVM boot and a micro-batch that fails
+    on the first write, minutes later on a small machine.
+    """
+    for name, store in sink_cfg.stores.items():
+        try:
+            store.list_objects("manifests/")
+        except StorageError as exc:
+            raise StorageError(f"destination {name} is not reachable: {exc}") from exc
 
 
 _OUR_ERROR_MESSAGE = re.compile(
@@ -208,7 +233,7 @@ def _trigger_kwargs(trigger: str) -> dict[str, Any]:
 # --- the Spark part (imports pyspark) ---------------------------------------------------------------
 
 
-def run(cfg: JobConfig) -> int:
+def run(cfg: JobConfig, sink_cfg: SinkConfig | None = None) -> int:
     import pandas as pd
     from pyspark.sql import SparkSession
     from pyspark.sql import functions as F
@@ -216,7 +241,7 @@ def run(cfg: JobConfig) -> int:
     from pyspark.sql.streaming.state import GroupState, GroupStateTimeout
 
     logger = get_logger("ecomm.spark")
-    sink_cfg = make_sink_config(cfg)
+    sink_cfg = sink_cfg or make_sink_config(cfg)
     retention_ms = int(cfg.dedup_retention_hours * 3_600_000)
     late_threshold = cfg.late_threshold
 
@@ -424,7 +449,24 @@ def run(cfg: JobConfig) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     cfg = config_from_args(build_parser().parse_args(argv))
-    return run(cfg)
+    logger = get_logger("ecomm.spark")
+    try:
+        sink_cfg = make_sink_config(cfg)
+    except StorageConfigError as exc:  # e.g. ECOMM_S3_BACKEND=minio without its settings
+        log(logger, logging.ERROR, "storage not configured", error=str(exc))
+        return 2
+    try:
+        check_destinations(sink_cfg)
+    except StorageError as exc:
+        log(logger, logging.ERROR, "destination unreachable; not starting Spark", error=str(exc))
+        return 1
+    log(
+        logger,
+        logging.INFO,
+        "destinations ready",
+        destinations=sorted(sink_cfg.stores),
+    )
+    return run(cfg, sink_cfg)
 
 
 if __name__ == "__main__":

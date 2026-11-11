@@ -113,7 +113,11 @@ def minio_store(
 
 def lake_layout(root: Path, env: Mapping[str, str] | None = None) -> LakeLayout:
     """The local directories the selected backend uses, without creating or opening anything."""
-    lake = root / "lake"
+    return lake_layout_in(root / "lake", env)
+
+
+def lake_layout_in(lake: Path, env: Mapping[str, str] | None = None) -> LakeLayout:
+    """Like :func:`lake_layout`, for a lake directory itself (the Spark job's ``--lake-dir``)."""
     if selected_backend(env) == "minio":
         return LakeLayout(s3_directory=None, local_directories=(lake / GCS_NAME,))
     return LakeLayout(
@@ -132,7 +136,15 @@ def open_lake(
     Opening a local store creates its directory; use :func:`lake_layout` first to check that a
     lake exists.
     """
-    lake = root / "lake"
+    return open_lake_in(root / "lake", env, env_file)
+
+
+def open_lake_in(
+    lake: Path,
+    env: Mapping[str, str] | None = None,
+    env_file: Path = DEFAULT_ENV_FILE,
+) -> LakeStores:
+    """Like :func:`open_lake`, for a lake directory itself (the Spark job's ``--lake-dir``)."""
     s3: ObjectStore
     if selected_backend(env) == "minio":
         s3 = minio_store(env, env_file)
