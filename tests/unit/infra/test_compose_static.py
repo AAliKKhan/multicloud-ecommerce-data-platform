@@ -120,6 +120,61 @@ def test_airflow_services_are_opt_in_bounded_and_loopback_only() -> None:
     assert SERVICES["airflow-webserver"]["ports"] == ["127.0.0.1:${AIRFLOW_UI_PORT:-8081}:8080"]
 
 
+MONITORING = ("ecomm-exporter", "kafka-exporter", "prometheus", "grafana")
+
+
+def test_monitoring_services_are_opt_in_bounded_and_only_the_uis_are_published() -> None:
+    for name in MONITORING:
+        assert SERVICES[name]["profiles"] == ["monitoring"], name
+        assert "mem_limit" in SERVICES[name], name
+    assert "ports" not in SERVICES["ecomm-exporter"] and "ports" not in SERVICES["kafka-exporter"]
+    assert SERVICES["prometheus"]["ports"] == ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
+    assert SERVICES["grafana"]["ports"] == ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+
+
+def test_prometheus_flags_are_valid_and_the_lifecycle_api_stays_off() -> None:
+    command = SERVICES["prometheus"]["command"]
+    assert not any("enable-lifecycle" in str(c) for c in command)  # off by default
+    assert not any(str(c).endswith(("=false", "=true")) for c in command), (
+        "boolean flags take no value"
+    )
+    assert "--config.file=/etc/prometheus/prometheus.yml" in command
+    mounts = SERVICES["prometheus"]["volumes"]
+    assert all(m.endswith(":ro") for m in mounts if m.startswith("./"))  # config is read-only
+
+
+def test_grafana_refuses_the_default_login_and_never_serves_anonymously() -> None:
+    grafana = SERVICES["grafana"]
+    assert grafana["entrypoint"][:2] == ["/bin/sh", "/require-secret.sh"]
+    assert grafana["env_file"][0]["path"] == "docker/monitoring/.env"
+    env = grafana["environment"]
+    assert env["GF_AUTH_ANONYMOUS_ENABLED"] == "false" and env["GF_USERS_ALLOW_SIGN_UP"] == "false"
+    assert "GF_SECURITY_ADMIN_PASSWORD" not in env  # comes from the generated, git-ignored file
+    assert "./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro" in grafana["volumes"]
+
+
+def test_exporter_and_prometheus_data_mounts_are_read_only_where_they_should_be() -> None:
+    exporter = SERVICES["ecomm-exporter"]
+    assert "./src:/app/src:ro" in exporter["volumes"]
+    assert any(v.endswith(":/data/pipeline:ro") for v in exporter["volumes"])  # reads, never writes
+    assert {"prometheus-data", "grafana-data"} <= set(COMPOSE["volumes"])
+
+
+def test_exporter_image_matches_the_lockfile_versions() -> None:
+    text = (REPO / "docker" / "exporter" / "Dockerfile").read_text(encoding="utf-8")
+    lock = (REPO / "uv.lock").read_text(encoding="utf-8")
+    for arg, package in (
+        ("DUCKDB_VERSION", "duckdb"),
+        ("PROMETHEUS_CLIENT_VERSION", "prometheus-client"),
+        ("PYDANTIC_VERSION", "pydantic"),
+        ("PYDANTIC_SETTINGS_VERSION", "pydantic-settings"),
+    ):
+        pinned = re.search(rf"ARG {arg}=(\S+)", text)
+        locked = re.search(rf'name = "{package}"\nversion = "([^"]+)"', lock)
+        assert pinned and locked and pinned.group(1) == locked.group(1), (package, arg)
+    assert "USER 10001" in text  # not root
+
+
 def test_airflow_start_order_secrets_and_mounts() -> None:
     assert (
         SERVICES["airflow-init"]["depends_on"]["airflow-postgres"]["condition"] == "service_healthy"
