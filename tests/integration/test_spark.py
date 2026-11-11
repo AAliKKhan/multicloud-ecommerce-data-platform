@@ -300,8 +300,9 @@ def test_too_short_a_retention_fails_loudly_instead_of_dropping_messages_silentl
         # A watermark of ~4 seconds of event time: later batches contain rows older than it.
         result = run_job(prefix, "--dedup-retention-hours", "0.001")
         output = result.stdout + result.stderr
-        assert result.returncode != 0, tail(result)
-        assert "lost messages between Kafka and the sink" in output, tail(result)
+        assert result.returncode == 1, tail(result)  # a clean failure exit, not a crash trace
+        failure = next(ln for ln in output.splitlines() if '"msg":"query failed"' in ln)
+        assert "OffsetGapError" in failure and "lost messages between Kafka" in failure, failure
         lake = LocalObjectStore(host_dir / "lake" / "s3-local", name="s3-local")
         committed = list_batch_ids(lake, "commerce")
         # Batches committed before the failing one are complete and contiguous from 0.
