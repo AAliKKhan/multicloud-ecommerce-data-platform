@@ -84,6 +84,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N", "S"]
 "src/ecomm/report/*.py" = ["E501"]
 # PySpark's own conventions: `functions as F`, `types as T`; long usage lines in the docstring.
 "src/ecomm/spark/job.py" = ["N812", "E501"]
+# DAG files carry long operator-facing docstrings (shown in the Airflow UI) and divider comments.
+"airflow/dags/*.py" = ["E501"]
 "src/ecomm/lake/quarantine_cli.py" = ["E501"]
 # SQL is built only from validated identifiers and literals (see safe_identifier).
 "src/ecomm/warehouse/**" = ["S608"]
