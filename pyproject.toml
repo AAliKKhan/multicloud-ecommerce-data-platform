@@ -23,6 +23,7 @@ ecomm-kafka = "ecomm.producer.cli:main"
 ecomm-load = "ecomm.warehouse.cli:main"
 ecomm-reconcile = "ecomm.lake.reconcile_cli:main"
 ecomm-dbt = "ecomm.orchestration.dbt_runner:main"
+ecomm-bi = "ecomm.bi.cli:main"
 
 [project.optional-dependencies]
 aws = [
@@ -34,6 +35,9 @@ gcp = [
 ]
 kafka = [
     "confluent-kafka>=2.5,<3",
+]
+bi = [
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [dependency-groups]
@@ -49,6 +53,7 @@ dev = [
     "mypy>=1.10,<2",
     "moto[s3]>=5,<6",
     "pyyaml>=6,<7",
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [tool.uv]
