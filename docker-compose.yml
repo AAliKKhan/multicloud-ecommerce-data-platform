@@ -11,6 +11,47 @@
 # 127.0.0.1 so nothing is reachable from other machines.
 name: ecomm
 
+# Airflow (profile "airflow"): not started by default.
+#   python docker/airflow/generate_env.py          # once: random secrets, git-ignored
+#   docker compose --profile airflow up -d --build
+# See docs/airflow.md. Memory: about 2.5 GB in total, so stop Spark and Kafka UI while it runs on
+# an 8 GB machine.
+x-airflow-common: &airflow-common
+  image: ecomm-airflow:2.10.5
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+  profiles: ["airflow"]
+  # Arbitrary UID (group 0) is how the official image supports bind mounts on Linux/CI.
+  user: "${AIRFLOW_UID:-50000}:0"
+  env_file:
+    - path: docker/airflow/.env
+      required: false # a missing file is reported by require-secrets.sh with instructions
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true" # nothing runs until you unpause it
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
+    AIRFLOW__CORE__PARALLELISM: "4"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "2"
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "60"
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+    AIRFLOW__WEBSERVER__WORKERS: "1"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "False"
+    AIRFLOW__WEBSERVER__WARN_DEPLOYMENT_EXPOSURE: "False"
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.session
+    AIRFLOW__SCARF_ANALYTICS__SCARF_ANALYTICS: "false"
+    AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+    ECOMM_DATA_DIR: /data/pipeline
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - ./src:/opt/ecomm/src:ro
+    - ./dbt:/opt/ecomm/dbt:ro
+    - ${AIRFLOW_DATA_DIR:-./data/spark}:/data/pipeline
+    - airflow-logs:/opt/airflow/logs
+  entrypoint: ["/opt/airflow/require-secrets.sh", "/usr/bin/dumb-init", "--", "/entrypoint"]
+
 services:
   kafka:
     image: apache/kafka:3.9.1
@@ -115,5 +156,70 @@ services:
     entrypoint: ["/usr/bin/tini", "--", "python", "-m", "ecomm.spark.job"]
     mem_limit: 2g
 
+  airflow-postgres:
+    profiles: ["airflow"]
+    image: postgres:16-alpine
+    container_name: ecomm-airflow-postgres
+    restart: unless-stopped
+    env_file:
+      - path: docker/airflow/.env
+        required: false
+    volumes:
+      - airflow-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # No published port: only the Airflow containers reach the database.
+    mem_limit: 384m
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: ecomm-airflow-init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    restart: "no"
+    command: ["bash", "/opt/airflow/init.sh"]
+    mem_limit: 768m
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: ecomm-airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1200m
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: ecomm-airflow-webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    command: ["webserver"]
+    ports:
+      # Login is required, but keep it on loopback anyway. Do not expose this port.
+      - "127.0.0.1:${AIRFLOW_UI_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health > /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    mem_limit: 1g
+
 volumes:
   kafka-data:
+  airflow-pgdata:
+  airflow-logs:
