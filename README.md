@@ -88,6 +88,29 @@ flowchart LR
     B --> C["Curated / gold<br/>BigQuery facts, dimensions, marts"]
 ```
 
+## Screenshots
+
+Captured from the running local stack (Docker, synthetic data, nothing mocked). The data is a three-day demo run, so
+the charts are small; the point is that every panel is backed by a real service and real queries.
+
+### Grafana: pipeline health
+
+![Grafana dashboard: pipeline health, ingest outcomes, warehouse loads and Kafka/Spark streaming](docs/images/grafana-pipeline-health.png)
+
+The two "seconds since last load / last Spark batch" panels read about 18 hours because the demo data was
+generated the day before the capture; a stale load is exactly what those panels (and the `PipelineStale` alert)
+exist to show. Details: [docs/monitoring.md](docs/monitoring.md).
+
+### Metabase: business overview
+
+![Metabase dashboard: net sales, orders, average order value, payments, top products and low stock](docs/images/metabase-business-overview.png)
+
+Every figure comes from the curated dbt marts, and the dashboard states that the data is synthetic. The negative
+stock levels are a property of the generated events (dbt flags them as warnings), not a dashboard error. The last
+column of the freshness table is clipped in this layout. Details: [docs/bi-dashboard.md](docs/bi-dashboard.md).
+
+Regenerate both images from the live stacks with `uv run --with playwright python scripts/capture_screenshots.py`.
+
 ## Tech stack
 
 | Layer | Technology | Role | Status |
