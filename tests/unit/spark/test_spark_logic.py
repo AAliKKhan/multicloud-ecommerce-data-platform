@@ -306,6 +306,48 @@ def test_a_batch_with_only_invalid_rows_writes_quarantine_but_no_raw_batch() -> 
     assert list_ingest_stats(control, "commerce")[0].quarantined == 3
 
 
+def _invalid_row(i: int, payload: bytes = b"{oops") -> BatchRow:
+    return BatchRow(
+        "commerce.orders", 0, i, "k", payload, 1_000 + i, STATUS_INVALID,
+        None, None, None, False, "INVALID_JSON", "JSONDecodeError", False,
+    )  # fmt: skip
+
+
+def _flaky_sink(fail_reads: int) -> tuple[SinkConfig, FlakyObjectStore, InMemoryObjectStore]:
+    """An S3 side that cannot be read at first (a real outage fails reads, not only writes)."""
+    s3 = FlakyObjectStore(InMemoryObjectStore("s3"), fail_reads=fail_reads)
+    gcs = InMemoryObjectStore("gcs")
+    cfg = SinkConfig(
+        "commerce", "spark-t", {"s3": s3, "gcs": gcs},  # type: ignore[dict-item]
+        InMemoryObjectStore("ctl"), retry=RetryPolicy(max_attempts=2), sleep=lambda _: None,
+    )  # fmt: skip
+    return cfg, s3, gcs
+
+
+def test_an_unreadable_destination_fails_the_batch_cleanly_before_writing_anything() -> None:
+    """Found while wiring Spark to MinIO. The pre-write conflict check reads each destination; if
+    that read fails (not 'missing') the batch must fail with a retryable, readable error and write
+    NOTHING anywhere, because without the read we cannot know it would not overwrite something."""
+    cfg, s3, gcs = _flaky_sink(fail_reads=1)
+    batch = run_stateful_dedup(chunks(rows_from_emissions(), 400), {})[0]
+    with pytest.raises(BatchCommitError, match=r"cannot verify.*s3.*retried"):
+        process_batch(batch, 0, cfg)
+    assert s3.inner.objects == {} and gcs.objects == {}  # nothing half-written on either side
+    assert cfg.control_store.list_objects() == []  # no ledger or statistics for a batch that failed
+
+    outcome = process_batch(batch, 0, cfg)  # the outage is over: Spark retries the same batch
+    assert outcome.committed
+    assert reconcile_all({"s3": s3, "gcs": gcs}, "commerce")[0].ok
+
+
+def test_an_unreadable_destination_is_also_caught_on_the_quarantine_only_path() -> None:
+    cfg, s3, gcs = _flaky_sink(fail_reads=1)
+    with pytest.raises(BatchCommitError, match=r"cannot verify.*quarantine"):
+        process_batch([_invalid_row(0)], 4, cfg)
+    assert s3.inner.objects == {} and gcs.objects == {}
+    assert process_batch([_invalid_row(0)], 4, cfg).quarantined == 1  # retry succeeds
+
+
 def test_quarantine_only_conflict_is_also_refused() -> None:
     cfg, s3, *_ = sink()
 

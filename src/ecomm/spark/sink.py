@@ -126,6 +126,15 @@ def _offsets(rows: Sequence[BatchRow]) -> dict[str, list[int]]:
 _RESET_HINT = "If the checkpoint was reset, start the job with a new run_id."
 
 
+def _unverifiable(
+    name: str, batch_id: str, exc: Exception, what: str = "manifest"
+) -> BatchCommitError:
+    return BatchCommitError(
+        f"cannot verify the {what} of batch {batch_id} at {name} ({exc}); nothing was written, "
+        "it will be retried from the checkpoint"
+    )
+
+
 def _check_no_conflict(
     stores: Mapping[str, ObjectStore],
     source: str,
@@ -133,7 +142,12 @@ def _check_no_conflict(
     manifest: BatchManifest | None,
     quarantine: bytes | None,
 ) -> None:
-    """Refuse to overwrite anything already committed under this batch ID with different data."""
+    """Refuse to overwrite anything already committed under this batch ID with different data.
+
+    A destination that cannot be READ (an outage, a timeout) is different from one that has nothing:
+    without the read we cannot know the write is safe, so the batch fails before anything is written
+    anywhere, with an error Spark retries from its checkpoint.
+    """
     for name, store in stores.items():
         if manifest is not None:
             try:
@@ -142,6 +156,8 @@ def _check_no_conflict(
                 )
             except (ObjectNotFoundError, ValueError):
                 existing = None  # absent, or unreadable (the commit protocol rewrites it)
+            except StorageError as exc:
+                raise _unverifiable(name, batch_id, exc) from exc
             if existing is not None and existing != manifest:
                 raise BatchConflictError(
                     f"{name}: batch {batch_id} is already committed with different content. "
@@ -152,6 +168,8 @@ def _check_no_conflict(
                 old = store.read_object(quarantine_key(source, batch_id))
             except ObjectNotFoundError:
                 continue
+            except StorageError as exc:
+                raise _unverifiable(name, batch_id, exc, what="quarantine") from exc
             if old != quarantine:
                 raise BatchConflictError(
                     f"{name}: quarantine for batch {batch_id} already exists with different "
