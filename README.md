@@ -216,7 +216,7 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Data-quality suite | 17 checks, healthy and deliberately broken runs, on real dbt output | Passing |
 | Metrics, alert rules, Grafana | `promtool` runs each alert through the real rule engine (fires when broken, quiet when healthy); with the live stack: targets up, rules loaded, Grafana locked down and provisioned, every dashboard query runs through Grafana | Passing locally and in CI |
 | Static HTML dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
-| Metabase dashboard | Live stack: every question runs, dashboard numbers equal the DuckDB marts, provisioning is idempotent, the database role is read-only, the API refuses anonymous callers | Passing locally; the layout was checked by eye in a browser |
+| Metabase dashboard | Live stack: every question runs, dashboard numbers equal the DuckDB marts, provisioning is idempotent, the database role is read-only, the API refuses anonymous callers | Passing locally and in CI; the layout was checked by eye in a browser |
 
 No cloud resource has been created and no cloud account is required.
 
