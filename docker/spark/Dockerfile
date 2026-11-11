@@ -55,6 +55,14 @@ RUN set -eux; \
     curl -fsSLO "${MAVEN}/org/apache/commons/commons-pool2/${COMMONS_POOL_VERSION}/commons-pool2-${COMMONS_POOL_VERSION}.jar"; \
     ls -1 "${JARS}" | grep -E 'kafka|commons-pool2'
 
+# S3 client for the S3-compatible raw-zone destination (MinIO, see docs/minio.md). It is the last
+# layer on purpose, so the large PySpark and connector layers above stay cached. The versions
+# equal uv.lock (a unit test checks), so the container runs the adapter the tests ran against.
+ARG BOTO3_VERSION=1.43.127
+ARG BOTOCORE_VERSION=1.43.127
+RUN pip install --default-timeout=180 --retries 10 \
+        "boto3==${BOTO3_VERSION}" "botocore==${BOTOCORE_VERSION}"
+
 # The project source is bind-mounted at /app/src by docker-compose (no rebuild per edit).
 ENV PYTHONPATH=/app/src
 WORKDIR /app

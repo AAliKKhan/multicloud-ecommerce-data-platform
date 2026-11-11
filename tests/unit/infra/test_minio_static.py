@@ -139,6 +139,32 @@ def test_the_image_is_built_from_the_patched_pinned_source() -> None:
     assert "MINIO_UPDATE=off" in text
 
 
+def test_spark_gets_the_pipeline_users_key_and_the_in_network_endpoint_never_root() -> None:
+    spark = SERVICES["spark"]
+    env_files = [e["path"] if isinstance(e, dict) else e for e in spark["env_file"]]
+    assert env_files == ["docker/minio/.env"]  # the pipeline user's file, not .env.root
+    assert spark["env_file"][0]["required"] is False  # a plain local run needs no MinIO secrets
+    env = spark["environment"]
+    assert env["ECOMM_S3_ENDPOINT_URL"] == "http://minio:9000"  # a host name inside the network
+    assert env["ECOMM_S3_BACKEND"] == "${ECOMM_S3_BACKEND:-local}"  # local unless asked
+    assert not {"ECOMM_S3_ACCESS_KEY", "ECOMM_S3_SECRET_KEY"} & set(env)  # never literal in compose
+    assert not any(k.startswith("MINIO_ROOT") for k in env)
+    # Starting Spark must not drag MinIO in: the two are separate opt-in profiles.
+    assert "minio" not in spark["depends_on"]
+
+
+def test_the_spark_image_has_the_s3_client_at_the_locked_versions() -> None:
+    text = (REPO / "docker" / "spark" / "Dockerfile").read_text(encoding="utf-8")
+    lock = (REPO / "uv.lock").read_text(encoding="utf-8")
+    for arg, package in (("BOTO3_VERSION", "boto3"), ("BOTOCORE_VERSION", "botocore")):
+        pinned = re.search(rf"ARG {arg}=(\S+)", text)
+        locked = re.search(rf'name = "{package}"\nversion = "([^"]+)"', lock)
+        assert pinned and locked and pinned.group(1) == locked.group(1), (package, arg)
+    # Last layer: the large PySpark and connector layers above it keep their build cache.
+    assert text.index("BOTO3_VERSION") > text.index("spark-sql-kafka-0-10")
+    assert text.index("BOTO3_VERSION") < text.index("ENV PYTHONPATH=/app/src")
+
+
 def test_the_compose_image_tag_matches_the_pinned_release() -> None:
     assert SERVICES["minio"]["image"] == SERVICES["minio-init"]["image"] == "ecomm-minio:2025-10-15"
     assert "2025-10-15" in PATCHED_TAG

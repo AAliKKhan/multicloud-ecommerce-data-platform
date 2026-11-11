@@ -131,6 +131,11 @@ services:
   #   docker compose --profile spark run --rm spark --trigger processing-time:10s
   # Output goes to ./data/spark (lake/, checkpoints/) on the host. The source tree is
   # bind-mounted read-only, so code edits need no image rebuild.
+  # To land the S3 side of the raw zone in MinIO instead of a local folder (docs/minio.md):
+  #   docker compose --profile minio up -d --build        # and run minio-init once
+  #   $env:ECOMM_S3_BACKEND = "minio"                      # then run the job as above
+  # The job reaches MinIO as the least-privilege pipeline user; the root credentials never
+  # reach this container. It is not started by --profile spark alone and needs no MinIO otherwise.
   spark:
     profiles: ["spark"]
     image: ecomm-spark:3.5.6
@@ -142,10 +147,19 @@ services:
       kafka:
         condition: service_healthy
     restart: "no"
+    env_file:
+      # The pipeline user's key and the bucket (NOT .env.root). Optional: unused unless
+      # ECOMM_S3_BACKEND=minio, so a plain local run needs no MinIO secrets.
+      - path: docker/minio/.env
+        required: false
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC_PREFIX: ${KAFKA_TOPIC_PREFIX:-commerce}
       LATE_EVENT_THRESHOLD_MINUTES: ${LATE_EVENT_THRESHOLD_MINUTES:-60}
+      ECOMM_S3_BACKEND: ${ECOMM_S3_BACKEND:-local}
+      # Inside the compose network MinIO is a host name, not the loopback address the host uses
+      # (this overrides the endpoint in the env file).
+      ECOMM_S3_ENDPOINT_URL: http://minio:9000
     volumes:
       - ./src:/app/src:ro
       - ./data/spark:/data
