@@ -110,3 +110,56 @@ def reconcile_all(stores: Mapping[str, ObjectStore], source: str) -> list[Parity
     """Reconcile every batch known to *any* destination."""
     batch_ids = sorted({b for store in stores.values() for b in list_batch_ids(store, source)})
     return [reconcile_batch(stores, source, b) for b in batch_ids]
+
+
+# --- light check: manifests and object presence only (cheap enough for a metrics endpoint) -------
+
+
+def reconcile_all_light(stores: Mapping[str, ObjectStore], source: str) -> list[ParityReport]:
+    """Compare destinations without reading or hashing any data object.
+
+    For every batch known to any destination: the manifest must exist in each, the manifests must
+    describe the same content (event count, logical checksum, object keys and SHA-256s), and every
+    object a manifest lists must exist (one directory listing per destination, no object reads).
+
+    This catches a missing or divergent commit, which is what a *monitor* needs on every refresh.
+    It does **not** detect an object whose bytes were altered in place; that needs the full
+    :func:`reconcile_all` (the daily reconciliation DAG, and the one-shot exporter).
+    """
+    listings = {name: set(store.list_objects("raw/")) for name, store in stores.items()}
+    batch_ids = sorted({b for store in stores.values() for b in list_batch_ids(store, source)})
+    return [_light_report(stores, listings, source, b) for b in batch_ids]
+
+
+def _light_report(
+    stores: Mapping[str, ObjectStore], listings: Mapping[str, set[str]], source: str, batch_id: str
+) -> ParityReport:
+    checks: dict[str, DestinationCheck] = {}
+    fingerprints: dict[str, tuple[int, str, tuple[tuple[str, str], ...]]] = {}
+    for name, store in stores.items():
+        try:
+            manifest = BatchManifest.from_bytes(store.read_object(manifest_key(source, batch_id)))
+        except ObjectNotFoundError:
+            checks[name] = DestinationCheck(False, problems=("manifest missing",))
+            continue
+        except (ValueError, StorageError) as exc:
+            problem = f"manifest unreadable: {type(exc).__name__}"
+            checks[name] = DestinationCheck(False, problems=(problem,))
+            continue
+        missing = [e.key for e in manifest.objects if e.key not in listings[name]]
+        checks[name] = DestinationCheck(
+            True,
+            manifest.event_count,
+            manifest.logical_checksum,
+            tuple(f"object missing: {key}" for key in missing[:5]),
+        )
+        fingerprints[name] = (
+            manifest.event_count,
+            manifest.logical_checksum,
+            tuple(sorted((e.key, e.sha256) for e in manifest.objects)),
+        )
+    problems = [f"{name}: {p}" for name, c in checks.items() for p in c.problems]
+    if len(set(fingerprints.values())) > 1:
+        problems.append("destinations hold different manifests for this batch")
+    status = ParityStatus.MATCH if not problems else ParityStatus.MISMATCH
+    return ParityReport(batch_id, status, checks, tuple(problems))
