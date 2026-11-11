@@ -1,6 +1,5 @@
-# Prometheus scrape configuration. NOT YET RUN: Prometheus is part of the
-# Docker phase. The metric names used here and in alerts.yml are verified by
-# tests against the exporter (tests/unit/observability).
+# Prometheus scrape configuration for the docker-compose "monitoring" profile.
+# Validated with `promtool check config` (tests/integration/test_monitoring.py).
 global:
   scrape_interval: 30s
   evaluation_interval: 30s
@@ -9,15 +8,25 @@ rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
-  # Pipeline + business metrics from `ecomm-metrics --serve 9108`.
-  # Inside Docker on Windows/macOS the host is reachable as host.docker.internal.
+  # Pipeline + business metrics (ecomm-metrics --serve, in the ecomm-exporter container).
   - job_name: ecomm-pipeline
     static_configs:
-      - targets: ["host.docker.internal:9108"]
+      - targets: ["ecomm-exporter:9108"]
         labels:
           environment: local
 
-  # Added in the Docker phase, when the services exist:
-  #   - kafka exporter (consumer lag, messages in/out)
-  #   - Spark driver /metrics/prometheus (input rows, batch duration)
-  #   - Airflow StatsD exporter (DAG/task duration, retries, failures)
+  # Kafka broker and topic-partition offsets (consumer lag is derived: Spark keeps its own offsets).
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+        labels:
+          environment: local
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Not scraped yet, and honestly so:
+  #   - Spark driver metrics exist only while a query is running (port 4040 of the one-shot
+  #     container); per-batch progress is exported through ecomm_spark_* from the control store.
+  #   - Airflow task and DAG metrics need a StatsD exporter, which is not part of the stack.

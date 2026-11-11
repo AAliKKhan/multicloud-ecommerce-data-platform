@@ -1,6 +1,7 @@
-# Alert rules for the pipeline. NOT YET RUN in Prometheus (Docker phase).
-# tests/unit/observability checks that every metric referenced here is exposed
-# and that each alert condition becomes true in a simulated failure.
+# Alert rules for the pipeline. Loaded by Prometheus in the docker-compose "monitoring" profile.
+# Checked three ways: `promtool check rules`, `promtool test rules` against monitoring/prometheus/
+# alerts_test.yml (real Prometheus evaluation of synthetic series), and unit tests that every
+# ecomm_* metric referenced here is really exposed by the exporter.
 groups:
   - name: ecomm-pipeline
     rules:
@@ -63,3 +64,38 @@ groups:
           severity: warning
         annotations:
           summary: A pipeline metrics section failed to collect.
+
+      - alert: ExporterCannotReadPipelineData
+        expr: ecomm_exporter_ready < 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The exporter is up but cannot read the warehouse (not built yet, or locked by a writer).
+
+  - name: ecomm-infrastructure
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A monitored endpoint cannot be scraped (label job says which one).
+
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: The Kafka exporter sees no broker.
+
+      - alert: SparkConsumerLagHigh
+        expr: sum by (topic) (kafka_topic_partition_current_offset{topic=~"commerce\\.(orders|payments|inventory|customers)"} - ignoring(instance, job) ecomm_spark_next_offset) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 1000 messages on a topic are not yet processed by the Spark job.
+          runbook: docs/spark.md (start or restart the job; check the retention rule)

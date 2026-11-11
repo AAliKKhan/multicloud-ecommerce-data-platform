@@ -1,11 +1,11 @@
 {
   "uid": "ecomm-pipeline-health",
   "title": "E-commerce pipeline health (synthetic data)",
-  "description": "Pipeline and infrastructure health first, business totals clearly separated at the bottom. NOT YET LOADED INTO GRAFANA (Docker phase); queries are checked by tests against the exporter.",
+  "description": "Pipeline and streaming health first, business totals clearly separated at the bottom. Provisioned from monitoring/grafana/dashboards; every query is checked against the exporter by tests and against Prometheus by tests/integration/test_monitoring.py.",
   "tags": ["ecomm", "pipeline"],
   "schemaVersion": 39,
-  "version": 1,
-  "editable": true,
+  "version": 2,
+  "editable": false,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
@@ -84,25 +84,72 @@
       "targets": [ { "refId": "A", "expr": "ecomm_warehouse_events", "legendFormat": "{{event_type}}" } ]
     },
     {
-      "id": 10, "type": "row", "title": "Business totals (synthetic data, separate from pipeline health)",
+      "id": 14, "type": "row", "title": "Streaming: Kafka and Spark (lag = Kafka end offset minus Spark's next offset)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }, "collapsed": false, "panels": []
     },
     {
+      "id": 15, "type": "stat", "title": "Kafka brokers visible",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "kafka_brokers" } ]
+    },
+    {
+      "id": 16, "type": "stat", "title": "Messages not yet processed by Spark",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 100 }, { "color": "red", "value": 1000 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum(kafka_topic_partition_current_offset{topic=~\"commerce\\\\.(orders|payments|inventory|customers)\"} - ignoring(instance, job) ecomm_spark_next_offset)" } ]
+    },
+    {
+      "id": 17, "type": "stat", "title": "Seconds since Spark last recorded a batch",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "time() - ecomm_spark_last_batch_timestamp_seconds > 0" } ]
+    },
+    {
+      "id": 18, "type": "stat", "title": "Exporter can read pipeline data (1 = yes)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "min(ecomm_exporter_ready)" } ]
+    },
+    {
+      "id": 19, "type": "timeseries", "title": "Unprocessed messages per topic (Spark lag)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic=~\"commerce\\\\.(orders|payments|inventory|customers)\"} - ignoring(instance, job) ecomm_spark_next_offset)", "legendFormat": "{{topic}}" } ]
+    },
+    {
+      "id": 20, "type": "timeseries", "title": "Messages ever written per topic (Kafka end offsets)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic=~\"commerce\\\\..*\"})", "legendFormat": "{{topic}}" } ]
+    },
+    {
+      "id": 10, "type": "row", "title": "Business totals (synthetic data, separate from pipeline health)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 }, "collapsed": false, "panels": []
+    },
+    {
       "id": 11, "type": "stat", "title": "Net sales (USD)",
-      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 19 },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 32 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
       "targets": [ { "refId": "A", "expr": "ecomm_business_net_sales_usd" } ]
     },
     {
       "id": 12, "type": "stat", "title": "Qualifying orders",
-      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 19 },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 32 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "expr": "ecomm_business_qualifying_orders" } ]
     },
     {
       "id": 13, "type": "stat", "title": "Marts readable (1 = yes)",
-      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 19 },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 32 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "expr": "ecomm_business_metrics_available" } ]
     }

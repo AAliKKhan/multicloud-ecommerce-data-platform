@@ -1,0 +1,223 @@
+# Unit tests for alerts.yml, run by the REAL Prometheus rule engine:
+#   promtool test rules monitoring/prometheus/alerts_test.yml
+# (tests/integration/test_monitoring.py runs it in the pinned prom/prometheus container.)
+# Each broken scenario feeds synthetic series and asserts the alert fires only after its `for:`
+# duration; the healthy scenario asserts that nothing fires.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: pipeline stale (24 h without a successful load), respecting for 10m
+    interval: 1m
+    input_series:
+      - series: 'ecomm_seconds_since_last_successful_load'
+        values: '100000x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PipelineStale
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: PipelineStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: No successful warehouse load for more than 24 hours.
+              runbook: docs/operations.md#runbooks (pipeline is stale)
+
+  - name: a PARTIAL or FAILED raw batch, a failed load attempt and cloud parity mismatch
+    interval: 1m
+    input_series:
+      - series: 'ecomm_batches{status="PARTIAL"}'
+        values: '1x30'
+      - series: 'ecomm_batches{status="COMPLETE"}'
+        values: '5x30'
+      - series: 'ecomm_load_attempts{status="FAILED"}'
+        values: '2x30'
+      - series: 'ecomm_load_attempts{status="SUCCEEDED"}'
+        values: '9x30'
+      - series: 'ecomm_parity_batches_mismatched'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BatchesNotComplete
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              status: PARTIAL
+            exp_annotations:
+              summary: A raw batch is PARTIAL or FAILED (one destination is not committed).
+              runbook: docs/operations.md#runbooks (a cloud destination failed)
+      - eval_time: 10m
+        alertname: WarehouseLoadFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              status: FAILED
+            exp_annotations:
+              summary: At least one warehouse load attempt failed; check raw.load_audit.
+      - eval_time: 10m
+        alertname: CloudParityMismatch
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: S3 and GCS copies of at least one batch disagree.
+              runbook: docs/operations.md#runbooks (a cloud destination failed)
+
+  - name: quarantine flood and failing data-quality checks
+    interval: 1m
+    input_series:
+      - series: 'ecomm_quarantine_rate'
+        values: '0.3x30'
+      - series: 'ecomm_quality_checks{status="FAIL"}'
+        values: '2x30'
+      - series: 'ecomm_quality_checks{status="PASS"}'
+        values: '14x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HighQuarantineRate
+        exp_alerts: []  # still inside for: 10m
+      - eval_time: 12m
+        alertname: HighQuarantineRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: More than 5% of messages are being quarantined (dead-letter rate).
+              runbook: inspect with `ecomm-quarantine`
+      - eval_time: 10m
+        alertname: DataQualityChecksFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              status: FAIL
+            exp_annotations:
+              summary: The latest data-quality run has failing checks.
+
+  - name: collection problems in the exporter
+    interval: 1m
+    input_series:
+      - series: 'ecomm_scrape_errors{section="lake"}'
+        values: '1x30'
+      - series: 'ecomm_scrape_errors{section="warehouse"}'
+        values: '0x30'
+      - series: 'ecomm_exporter_ready{reason="IOException"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MetricsCollectionBroken
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A pipeline metrics section failed to collect.
+      - eval_time: 15m
+        alertname: ExporterCannotReadPipelineData
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: IOException
+            exp_annotations:
+              summary: The exporter is up but cannot read the warehouse (not built yet, or locked by a writer).
+
+  - name: a scrape target and the Kafka broker go down
+    interval: 1m
+    input_series:
+      - series: 'up{job="kafka", instance="kafka-exporter:9308"}'
+        values: '0x30'
+      - series: 'up{job="ecomm-pipeline", instance="ecomm-exporter:9108"}'
+        values: '1x30'
+      - series: 'kafka_brokers'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ScrapeTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: kafka
+              instance: kafka-exporter:9308
+            exp_annotations:
+              summary: A monitored endpoint cannot be scraped (label job says which one).
+      - eval_time: 10m
+        alertname: KafkaBrokerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: The Kafka exporter sees no broker.
+
+  - name: Spark falls behind Kafka (lag derived from end offsets and Spark's own progress)
+    interval: 1m
+    input_series:
+      # orders: 5000 written, 1000 processed -> lag 4000 (alert); payments: fully processed
+      - series: 'kafka_topic_partition_current_offset{topic="commerce.orders", partition="0", instance="kafka-exporter:9308", job="kafka"}'
+        values: '2500x40'
+      - series: 'kafka_topic_partition_current_offset{topic="commerce.orders", partition="1", instance="kafka-exporter:9308", job="kafka"}'
+        values: '2500x40'
+      - series: 'ecomm_spark_next_offset{topic="commerce.orders", partition="0", instance="ecomm-exporter:9108", job="ecomm-pipeline"}'
+        values: '500x40'
+      - series: 'ecomm_spark_next_offset{topic="commerce.orders", partition="1", instance="ecomm-exporter:9108", job="ecomm-pipeline"}'
+        values: '500x40'
+      - series: 'kafka_topic_partition_current_offset{topic="commerce.payments", partition="0", instance="kafka-exporter:9308", job="kafka"}'
+        values: '800x40'
+      - series: 'ecomm_spark_next_offset{topic="commerce.payments", partition="0", instance="ecomm-exporter:9108", job="ecomm-pipeline"}'
+        values: '800x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SparkConsumerLagHigh
+        exp_alerts: []  # still inside for: 15m
+      - eval_time: 20m
+        alertname: SparkConsumerLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              topic: commerce.orders
+            exp_annotations:
+              summary: More than 1000 messages on a topic are not yet processed by the Spark job.
+              runbook: docs/spark.md (start or restart the job; check the retention rule)
+
+  - name: a healthy pipeline fires nothing
+    interval: 1m
+    input_series:
+      - series: 'ecomm_seconds_since_last_successful_load'
+        values: '600x40'
+      - series: 'ecomm_batches{status="COMPLETE"}'
+        values: '3x40'
+      - series: 'ecomm_batches{status="PARTIAL"}'
+        values: '0x40'
+      - series: 'ecomm_load_attempts{status="FAILED"}'
+        values: '0x40'
+      - series: 'ecomm_quarantine_rate'
+        values: '0.02x40'
+      - series: 'ecomm_parity_batches_mismatched'
+        values: '0x40'
+      - series: 'ecomm_quality_checks{status="FAIL"}'
+        values: '0x40'
+      - series: 'ecomm_scrape_errors{section="lake"}'
+        values: '0x40'
+      - series: 'ecomm_exporter_ready{reason=""}'
+        values: '1x40'
+      - series: 'up{job="kafka", instance="kafka-exporter:9308"}'
+        values: '1x40'
+      - series: 'kafka_brokers'
+        values: '1x40'
+      - series: 'kafka_topic_partition_current_offset{topic="commerce.orders", partition="0", instance="kafka-exporter:9308", job="kafka"}'
+        values: '900x40'
+      - series: 'ecomm_spark_next_offset{topic="commerce.orders", partition="0", instance="ecomm-exporter:9108", job="ecomm-pipeline"}'
+        values: '900x40'
+    alert_rule_test:
+      - {eval_time: 30m, alertname: PipelineStale, exp_alerts: []}
+      - {eval_time: 30m, alertname: BatchesNotComplete, exp_alerts: []}
+      - {eval_time: 30m, alertname: WarehouseLoadFailures, exp_alerts: []}
+      - {eval_time: 30m, alertname: HighQuarantineRate, exp_alerts: []}
+      - {eval_time: 30m, alertname: CloudParityMismatch, exp_alerts: []}
+      - {eval_time: 30m, alertname: DataQualityChecksFailing, exp_alerts: []}
+      - {eval_time: 30m, alertname: MetricsCollectionBroken, exp_alerts: []}
+      - {eval_time: 30m, alertname: ExporterCannotReadPipelineData, exp_alerts: []}
+      - {eval_time: 30m, alertname: ScrapeTargetDown, exp_alerts: []}
+      - {eval_time: 30m, alertname: KafkaBrokerDown, exp_alerts: []}
+      - {eval_time: 30m, alertname: SparkConsumerLagHigh, exp_alerts: []}
