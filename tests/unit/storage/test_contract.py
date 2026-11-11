@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -92,6 +93,15 @@ def test_local_store_metadata_and_traversal(tmp_path: Path) -> None:
     assert store.list_objects() == ["a/b"]  # sidecar hidden
     with pytest.raises(ValueError, match="invalid object key"):
         store.write_object("../escape", b"x")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_local_objects_and_sidecars_are_world_readable_not_mkstemp_private(tmp_path: Path) -> None:
+    """A container running as root writes the lake; the host user must be able to read it."""
+    store = LocalObjectStore(tmp_path)
+    store.write_object("a/b", b"x", {"batch_id": "b1"})
+    for path in (tmp_path / "a" / "b", tmp_path / "a" / "b.meta.json"):
+        assert path.stat().st_mode & 0o777 == 0o644, path
 
 
 def test_s3_adapter_requires_bucket() -> None:
