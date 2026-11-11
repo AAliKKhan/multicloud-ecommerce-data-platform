@@ -75,6 +75,13 @@ nothing, fails the batch loudly. The corrected demo, with `--dedup-retention-hou
 processed all 1,490 messages (checked partition by partition) and is covered by a regression
 test that forces a too-short retention and expects a loud failure.
 
+A second symptom of the same misconfiguration, found while testing the regression: with a retention
+much shorter than the data's time spread, Spark refuses a state expiry that lies behind its
+watermark (`INVALID_TIMEOUT_TIMESTAMP`) and the query dies. The job now clamps the expiry just past
+the watermark, so the state simply expires early, and the offset check above still turns any dropped
+rows into one explained failure. Either way the job ends with a single `query failed` log line, exit
+code 1 and the messages still in Kafka; it never reports success with fewer messages than planned.
+
 Rule of thumb: the retention must be at least the time span of the data being read at once.
 With live traffic, Kafka timestamps are arrival times and partitions stay roughly in step, so
 the default is fine; replaying a historical window needs its full length.
