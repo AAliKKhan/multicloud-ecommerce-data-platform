@@ -4,6 +4,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -11,8 +12,8 @@ from prometheus_client import generate_latest
 from prometheus_client.parser import text_string_to_metric_families
 
 from ecomm.lake.manifest import manifest_key
+from ecomm.observability.cli import families_or_error, snapshot_for_demo_dir
 from ecomm.observability.cli import main as metrics_main
-from ecomm.observability.cli import snapshot_for_demo_dir
 from ecomm.observability.metrics import (
     Snapshot,
     build_registry,
@@ -23,7 +24,8 @@ from ecomm.observability.metrics import (
 REPO = Path(__file__).resolve().parents[3]
 ALERTS = REPO / "monitoring" / "prometheus" / "alerts.yml"
 DASHBOARD = REPO / "monitoring" / "grafana" / "dashboards" / "pipeline_health.json"
-ALLOWED_LABELS = {"status", "event_type", "section"}
+ALLOWED_LABELS = {"status", "event_type", "section", "topic", "partition", "reason"}
+KAFKA_EXPORTER_METRICS = {"kafka_brokers", "kafka_topic_partition_current_offset"}
 
 
 def samples(snapshot: Snapshot) -> list[tuple[str, dict[str, str], float]]:
@@ -49,9 +51,11 @@ EXPR = re.compile(
 )
 
 
-def fires(expr: str, snapshot: Snapshot) -> bool:
+def fires(expr: str, snapshot: Snapshot) -> bool | None:
+    """Evaluate the simple expression shapes; ``None`` for the rest (promtool tests those)."""
     match = EXPR.match(expr.strip())
-    assert match, f"unsupported alert expression shape: {expr}"
+    if match is None:
+        return None
     selected = []
     for name, labels, val in samples(snapshot):
         if name != match["name"]:
@@ -72,9 +76,13 @@ def fires(expr: str, snapshot: Snapshot) -> bool:
     return any(v > threshold for v in selected)
 
 
+def all_rules() -> list[dict[str, Any]]:
+    groups = yaml.safe_load(ALERTS.read_text(encoding="utf-8"))["groups"]
+    return [rule for group in groups for rule in group["rules"]]
+
+
 def alert_rules() -> dict[str, str]:
-    rules = yaml.safe_load(ALERTS.read_text(encoding="utf-8"))["groups"][0]["rules"]
-    return {r["alert"]: r["expr"] for r in rules}
+    return {r["alert"]: r["expr"] for r in all_rules()}
 
 
 # --- snapshot content ---------------------------------------------------------------------
@@ -144,6 +152,9 @@ def test_cli_writes_a_textfile_and_reports_missing_data(
 
 def test_every_metric_in_alerts_and_dashboard_exists(demo_dir: Path) -> None:
     exposed = metric_names(snapshot_for_demo_dir(demo_dir))
+    exposed |= {s.name for f in families_or_error(demo_dir) for s in f.samples}
+    # Families that legitimately have no series yet (no Spark progress recorded) still exist:
+    exposed |= {f.name for f in snapshot_to_families(snapshot_for_demo_dir(demo_dir))}
     referenced: set[str] = set()
     referenced |= set(re.findall(r"\becomm_[a-z_]+", ALERTS.read_text()))
     dashboard = json.loads(DASHBOARD.read_text())
@@ -154,8 +165,14 @@ def test_every_metric_in_alerts_and_dashboard_exists(demo_dir: Path) -> None:
     assert referenced <= exposed, referenced - exposed
 
 
+def test_every_kafka_metric_in_alerts_and_dashboard_is_one_the_kafka_exporter_provides() -> None:
+    text = ALERTS.read_text() + DASHBOARD.read_text()
+    used = set(re.findall(r"\bkafka_[a-z_]+", text))
+    assert used and used <= KAFKA_EXPORTER_METRICS, used - KAFKA_EXPORTER_METRICS
+
+
 def test_alert_rules_are_well_formed() -> None:
-    rules = yaml.safe_load(ALERTS.read_text())["groups"][0]["rules"]
+    rules = all_rules()
     names = [r["alert"] for r in rules]
     assert len(names) == len(set(names))
     assert {
@@ -263,3 +280,94 @@ def test_alerts_fire_in_a_simulated_failure(demo_dir: Path) -> None:
 def test_never_loaded_pipeline_is_stale() -> None:
     never = Snapshot(now=datetime(2026, 1, 1, tzinfo=UTC))
     assert fires(alert_rules()["PipelineStale"], never)
+
+
+# --- exporter degradation and Spark progress ---------------------------------------------
+
+
+def flat(families: list[Any]) -> list[tuple[str, dict[str, str], float]]:
+    return [(s.name, dict(s.labels), s.value) for f in families for s in f.samples]
+
+
+def test_a_missing_warehouse_gives_a_ready_zero_answer_instead_of_a_failed_scrape(
+    tmp_path: Path,
+) -> None:
+    [(name, labels, value)] = flat(families_or_error(tmp_path))
+    assert name == "ecomm_exporter_ready" and value == 0.0 and labels["reason"]
+
+
+def test_a_corrupt_warehouse_file_is_reported_not_raised(tmp_path: Path) -> None:
+    (tmp_path / "warehouse.duckdb").write_bytes(b"this is not a duckdb file" * 50)
+    [(name, _, value)] = flat(families_or_error(tmp_path))
+    assert (name, value) == ("ecomm_exporter_ready", 0.0)
+
+
+def test_a_locked_warehouse_degrades_and_recovers_when_the_writer_lets_go(demo_dir: Path) -> None:
+    import duckdb
+
+    path = str(demo_dir / "warehouse.duckdb")
+    writer = duckdb.connect(path)  # another connection with different settings: the lock case
+    try:
+        locked = {n: v for n, _, v in flat(families_or_error(demo_dir))}
+        assert locked == {"ecomm_exporter_ready": 0.0}
+    finally:
+        writer.close()
+    healthy = flat(families_or_error(demo_dir))
+    assert ("ecomm_exporter_ready", {"reason": ""}, 1.0) in healthy
+    assert any(n == "ecomm_batches" for n, _, _ in healthy)
+
+
+def write_progress(demo_dir: Path, name: str, offsets: dict[str, list[int]]) -> None:
+    folder = demo_dir / "lake" / "control" / "spark" / "source=commerce"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"batch_id={name}.json").write_text(
+        json.dumps({"offsets": offsets, "recorded_at": "2026-11-10T12:00:00.000Z"})
+    )
+
+
+def test_spark_progress_becomes_next_offsets_per_topic_partition(demo_dir: Path) -> None:
+    write_progress(demo_dir, "b0", {"commerce.orders/0": [0, 99], "commerce.orders/1": [0, 49]})
+    write_progress(demo_dir, "b1", {"commerce.orders/0": [100, 149]})
+    snap = snapshot_for_demo_dir(demo_dir)
+    assert snap.spark_next_offsets == {("commerce.orders", 0): 150, ("commerce.orders", 1): 50}
+    assert snap.spark_last_batch_ts == datetime(2026, 11, 10, 12, tzinfo=UTC).timestamp()
+    assert snap.errors["spark"] == 0
+    text = generate_latest(build_registry(snap)).decode()
+    assert 'ecomm_spark_next_offset{partition="0",topic="commerce.orders"} 150.0' in text
+
+
+def test_a_corrupt_spark_progress_file_only_breaks_its_own_section(demo_dir: Path) -> None:
+    folder = demo_dir / "lake" / "control" / "spark" / "source=commerce"
+    folder.mkdir(parents=True)
+    (folder / "batch_id=bad.json").write_text("{not json")
+    snap = snapshot_for_demo_dir(demo_dir)
+    assert snap.errors["spark"] == 1 and snap.errors["lake"] == 0 and snap.events_committed > 0
+
+
+def test_no_spark_progress_means_no_offset_series_not_zeros(demo_dir: Path) -> None:
+    assert snapshot_for_demo_dir(demo_dir).spark_next_offsets == {}  # lag would be misleading
+
+
+def test_dashboard_has_a_streaming_row_and_panels_never_overlap() -> None:
+    panels = json.loads(DASHBOARD.read_text())["panels"]
+    assert any(p["type"] == "row" and "Streaming" in p["title"] for p in panels)
+    boxes = [(p["id"], p["gridPos"]) for p in panels]
+    for i, (a, ga) in enumerate(boxes):
+        for b, gb in boxes[i + 1 :]:
+            overlap = (
+                ga["x"] < gb["x"] + gb["w"]
+                and gb["x"] < ga["x"] + ga["w"]
+                and ga["y"] < gb["y"] + gb["h"]
+                and gb["y"] < ga["y"] + ga["h"]
+            )
+            assert not overlap, f"panels {a} and {b} overlap"
+
+
+def test_prometheus_targets_match_the_compose_services_and_exporter_port() -> None:
+    services = yaml.safe_load((REPO / "docker-compose.yml").read_text())["services"]
+    prom = yaml.safe_load((REPO / "monitoring/prometheus/prometheus.yml").read_text())
+    targets = {j["job_name"]: j["static_configs"][0]["targets"][0] for j in prom["scrape_configs"]}
+    assert targets["ecomm-pipeline"] == "ecomm-exporter:9108" and "ecomm-exporter" in services
+    assert targets["kafka"] == "kafka-exporter:9308" and "kafka-exporter" in services
+    dockerfile = (REPO / "docker" / "exporter" / "Dockerfile").read_text()
+    assert '"--serve", "9108", "--addr", "0.0.0.0"' in dockerfile
