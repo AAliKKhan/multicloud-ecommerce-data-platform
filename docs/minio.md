@@ -42,8 +42,9 @@ These commands follow the setting: `ecomm-demo`, `ecomm-load`, `ecomm-reconcile`
 Settings come from `docker/minio/.env` and the process environment (which wins):
 `ECOMM_S3_ENDPOINT_URL`, `ECOMM_S3_BUCKET`, `ECOMM_S3_ACCESS_KEY`, `ECOMM_S3_SECRET_KEY`.
 
-**Not yet wired to MinIO** (they run in containers and still use local directories): the Spark streaming job, the
-Airflow DAGs and the metrics exporter container.
+The **Spark streaming job** follows the same setting, in its container (as the pipeline user, over the compose
+network): [spark.md](spark.md#landing-the-s3-side-in-minio). **Not yet wired to MinIO** (they run in containers and
+still use local directories): the Airflow DAGs and the metrics exporter container.
 
 ## What is verified
 
@@ -60,11 +61,20 @@ Airflow DAGs and the metrics exporter container.
 - **Outage:** an unreachable endpoint gives PARTIAL within seconds (not a hang), the healthy side is written, and the
   retry completes only the failed side. Wrong credentials fail fast without echoing the secret.
 
+## Spark, end to end
+
+`tests/integration/test_spark_minio.py` (13 checks, also in CI as job `spark-minio`) runs the real Spark container
+against Kafka and MinIO: crash after a commit, MinIO stopped, restart, rerun. The result equals the reference
+ingest, the MinIO and local-GCS copies are byte-identical, and the warehouse loaded from MinIO has no double
+counting. With MinIO stopped the job exits in seconds before Spark starts and writes nothing. It took about 18
+minutes on this 5 GB machine (four Spark runs).
+
 ## Found by running it
 
-Two real defects, both fixed test-first and covered by unit tests: `commit_batch` crashed when a destination could
-not be *read* (so one unreachable cloud lost the whole commit instead of giving PARTIAL), and a refactor had made the
-"no lake yet" checks always pass. Details in the ADR.
+Three real defects, all fixed test-first and covered by unit tests: `commit_batch` crashed when a destination could
+not be *read* (so one unreachable cloud lost the whole commit instead of giving PARTIAL), a refactor had made the
+"no lake yet" checks always pass, and the Spark sink's pre-write conflict check let a raw storage error escape
+when a destination was unreadable. Details in the ADR.
 
 ## What it cannot prove
 

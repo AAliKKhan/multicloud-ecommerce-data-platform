@@ -58,6 +58,10 @@ Running against a real server found two defects that no fake had:
 2. **My own refactor disabled the "no lake yet" checks.** Opening a local store creates its directory, so checking
    afterwards always passed and a mistyped `--demo-dir` created an empty lake. A pure `lake_layout()` is now
    checked first, with tests for every reader.
+3. **The Spark sink's pre-write conflict check let a raw storage error escape** (found when wiring Spark to
+   MinIO, see the addendum below). It reads each destination before writing so it cannot overwrite different data;
+   a read that *failed* (as opposed to "not found") escaped as an unhandled `StorageError`. It is now a retryable
+   `BatchCommitError` naming the destination, raised before anything is written anywhere.
 
 ## What MinIO cannot tell us (so it is not claimed)
 
@@ -67,7 +71,9 @@ Running against a real server found two defects that no fake had:
   prove the policy works on real AWS. If AWS answers 403, the commit layer's "is this batch new?" check would fail
   against it. This needs a run against a real account (the same `test_minio.py` assertions can be pointed at S3);
   until then it is a recorded risk, not a validated design. Likely fixes: drop the prefix condition from the pipeline
-  `ListBucket` statement, or probe existence with a prefixed list.
+  `ListBucket` statement, or probe existence with a prefixed list. The Spark sink has the same exposure: its
+  "is this batch new?" read of the manifest and quarantine objects treats only "not found" as new, so a 403 would
+  now fail every new batch with `cannot verify the manifest` (loudly and without writing, but it would not run).
 - `ListBuckets` is refused by AWS but filtered by MinIO; the test asserts the property that matters (no other bucket
   is visible) rather than the status code.
 - IAM evaluation, KMS/SSE encryption, the `DenyInsecureTransport` bucket policy (local MinIO is plain HTTP) and
@@ -77,7 +83,31 @@ Running against a real server found two defects that no fake had:
 ## Consequences
 
 - Compose gains `minio` and `minio-init` under the opt-in `minio` profile (about 0.2 GB of memory; a 206 MB image).
-- The Spark container, the Airflow DAGs and the metrics exporter still use local directories; they run in
-  containers and are not yet wired to MinIO. Only the host commands follow the backend setting.
+- The Spark container follows the backend setting too (see the addendum). The Airflow DAGs and the metrics-exporter
+  container still use local directories and are not wired to MinIO.
 - The MinIO project itself is not maintained. For a local, loopback, synthetic-data stand-in that is acceptable;
   for anything else it would not be.
+
+## Addendum: the Spark streaming job writes to MinIO (2026-11-11)
+
+The Spark container is the component that writes the raw zone in the streaming path, so it follows the same
+`ECOMM_S3_BACKEND` setting through the same factory (`open_lake_in`, for the job's `--lake-dir`).
+
+- **Credentials and network.** The container reads the generated pipeline-user file (`docker/minio/.env`, optional)
+  and is given `ECOMM_S3_ENDPOINT_URL=http://minio:9000`, a host name on the compose network (the file holds the
+  loopback address the host uses). The root credentials never reach it, and no key is written in compose. The
+  `spark` and `minio` profiles stay independent: a local run needs no MinIO. `boto3` and `botocore` are added to the
+  image at the versions in `uv.lock` as the last layer (a test checks the versions), so the container runs the
+  adapter the tests ran against and the large PySpark layers keep their build cache.
+- **Fail before Spark starts.** The job lists both destinations first. An unreachable one exits `1` in seconds,
+  a missing MinIO configuration exits `2` with the fix, and neither boots the JVM. The alternative was a minute of
+  start-up followed by a failure on the first write.
+- **Unreadable is not empty.** See finding 3. Choosing to fail rather than assume "nothing there" is deliberate: the
+  conflict check exists to stop a checkpoint reset from silently overwriting different data.
+- **Verification.** `tests/integration/test_spark_minio.py` runs the real container against Kafka and MinIO: crash
+  after a commit, MinIO stopped, restart, rerun. Result equals the reference ingest, both destinations are
+  byte-identical, offsets are gapless and the warehouse loaded from MinIO has no double counting (13 checks passing,
+  about 18 minutes on this machine). With MinIO stopped the job failed fast and the local GCS copy was untouched.
+- **Not verified:** MinIO failing in the middle of a running micro-batch (not reproducible enough to test; the sink
+  is unit-tested against an unreadable and an unwritable destination), the 403-versus-404 question above, and
+  anything about performance. The Airflow DAGs and the exporter container are still local-only.

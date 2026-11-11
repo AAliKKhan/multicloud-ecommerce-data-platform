@@ -6,7 +6,8 @@ two destinations. Design decisions and limits: [ADR 0011](decisions/0011-spark-s
 
 Local substitutes: the two destinations are directories (`s3-local`, `gcs-local`) standing
 in for S3 and GCS, under `data/spark/lake/`. They use the same layout as the Docker-free demo,
-so the loader, quality suite and metrics work on this output unchanged.
+so the loader, quality suite and metrics work on this output unchanged. The S3 side can instead
+be a bucket on a real S3-compatible server (MinIO): see [Landing the S3 side in MinIO](#landing-the-s3-side-in-minio).
 
 ## Run it
 
@@ -27,6 +28,42 @@ Useful options (arguments after the service name go to the job):
 Output under `data/spark/`: `lake/s3-local`, `lake/gcs-local` (raw, manifests, quarantine),
 `lake/control` (ledger, ingest statistics, per-batch progress with offset ranges) and
 `checkpoints/ingest`. Spark's UI is on http://127.0.0.1:4040 while a query is running.
+
+## Landing the S3 side in MinIO
+
+With one setting the job writes the S3 copy of the raw zone to a MinIO bucket instead of a local folder,
+through the same S3 adapter that will talk to AWS. The GCS copy, the control store (ledger, statistics,
+progress) and the checkpoint stay local. MinIO setup: [minio.md](minio.md).
+
+```powershell
+docker compose up -d kafka kafka-init
+docker compose --profile minio up -d --build                 # then once: docker compose --profile minio run --rm minio-init
+docker compose --profile spark build spark                   # the image now contains boto3
+$env:ECOMM_S3_BACKEND = "minio"
+docker compose --profile spark run --rm spark --dedup-retention-hours 96
+uv run ecomm-load --demo-dir data/spark                      # the host reads the same bucket (same variable)
+```
+
+What the container gets: the **pipeline user's** key (a least-privilege user whose policy matches the
+Terraform pipeline role) and the in-network address `http://minio:9000`; never the MinIO root credentials.
+The MinIO and Spark profiles are independent, so a plain local run needs neither the secrets nor MinIO.
+
+- **Fail fast.** Before Spark starts, the job lists both destinations. With MinIO stopped it exits `1` in
+  seconds with `destination s3-minio is not reachable` and writes nothing, instead of booting the JVM and failing
+  on the first batch minutes later. `ECOMM_S3_BACKEND=minio` without its settings exits `2` with the fix.
+- **Unreadable is not the same as empty.** Before writing a batch the sink reads each destination to make
+  sure it will not overwrite different data. If that read *fails* (an outage, a timeout) the batch now fails with
+  a retryable `BatchCommitError` and **nothing is written anywhere**; before, the raw storage error escaped.
+  Found while wiring this up; covered by unit tests written first.
+- **Verified end to end** (`tests/integration/test_spark_minio.py`, 13 checks, real Kafka, the real container and
+  real MinIO): crash right after a commit, MinIO stopped (fails fast, writes nothing, the local GCS copy is
+  untouched), restart (replays the crashed batch), rerun with nothing new (changes nothing). The result equals
+  the pure-Python reference ingest (valid, duplicate, quarantined and late counts; no event written twice; every
+  quarantine reason; late flags), the MinIO and GCS copies are byte-identical, Kafka offsets are covered without
+  gaps, and a warehouse loaded from MinIO has no double counting and a replay adds nothing.
+- **Not tested:** MinIO going away *while* a micro-batch is running (the timing is not reproducible enough for a
+  reliable test; the unit tests cover the sink's behaviour on an unreadable or unwritable destination), and
+  anything that needs real AWS (see [ADR 0015](decisions/0015-minio-local-s3.md)).
 
 ## Then load, model and report
 
@@ -101,7 +138,9 @@ alongside Spark. A starved broker can stop heartbeating its controller and needs
 
 ## Not covered
 
-- Real S3, GCS or MinIO as destinations (local directories stand in).
+- Real AWS S3 and GCS as destinations. MinIO is verified as the S3 side; GCS is a local directory.
 - Multiple executors or a Spark cluster; the job runs in `local[2]`.
 - Executor-side parallel writes: the driver commits each micro-batch (see ADR 0011).
-- Kafka and Spark metrics in Prometheus (the monitoring step).
+- Spark driver metrics in Prometheus (the exporter publishes Spark's per-batch progress and lag, see
+  [monitoring.md](monitoring.md), but the one-shot container has no scrape target of its own).
+- The Airflow DAGs and the metrics-exporter container still read local directories, not MinIO.
