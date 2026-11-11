@@ -176,6 +176,21 @@ def make_sink_config(cfg: JobConfig) -> SinkConfig:
     return SinkConfig(source=cfg.source, run_id=cfg.run_id, stores=stores, control_store=control)
 
 
+_OUR_ERRORS = ("OffsetGapError", "BatchConflictError", "BatchCommitError")
+
+
+def summarize_failure(text: str, limit: int = 600) -> str:
+    """One readable line for a failed query.
+
+    Spark wraps a Python exception from ``foreachBatch`` in a long Java/Py4J stack trace; the
+    useful part is our own error line, so prefer it over the first characters.
+    """
+    for line in text.splitlines():
+        if any(name in line for name in _OUR_ERRORS):
+            return line.strip()[:limit]
+    return " ".join(text.split())[:limit]
+
+
 def _trigger_kwargs(trigger: str) -> dict[str, Any]:
     if trigger == "available-now":
         return {"availableNow": True}
@@ -382,11 +397,14 @@ def run(cfg: JobConfig) -> int:
                 log(logger, logging.INFO, "stop requested; stopping query")
                 query.stop()
                 break
-            query.awaitTermination(1)
+            query.awaitTermination(1)  # raises if the query failed
         exc = query.exception()
         if exc is not None:
-            log(logger, logging.ERROR, "query failed", error=str(exc)[:500])
+            log(logger, logging.ERROR, "query failed", error=summarize_failure(str(exc)))
             return 1
+    except Exception as exc:  # StreamingQueryException: a batch raised (e.g. OffsetGapError)
+        log(logger, logging.ERROR, "query failed", error=summarize_failure(str(exc)))
+        return 1
     finally:
         spark.stop()
     log(logger, logging.INFO, "query finished")
