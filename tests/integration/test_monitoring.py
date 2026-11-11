@@ -186,12 +186,25 @@ def test_every_scrape_target_is_up(stack: dict[str, str]) -> None:
 def test_every_rule_loads_healthy_and_none_fires_on_a_healthy_pipeline(
     stack: dict[str, str],
 ) -> None:
-    groups = http_json(f"{PROMETHEUS}/api/v1/rules")["data"]["groups"]
-    rules = [r for g in groups for r in g["rules"]]
+    def load_rules() -> list[dict[str, Any]]:
+        groups = http_json(f"{PROMETHEUS}/api/v1/rules")["data"]["groups"]
+        return [r for g in groups for r in g["rules"]]
+
+    # A rule's health is "unknown" until its group has been evaluated once, which can lag the
+    # exporter's first snapshot on a fresh start. Wait for that; a rule that stays unhealthy fails.
+    wait_for(
+        lambda: all(r.get("health") != "unknown" for r in load_rules()),
+        120,
+        "every alert rule to be evaluated once",
+    )
+    rules = load_rules()
     expected = yaml.safe_load((PROM_DIR / "alerts.yml").read_text(encoding="utf-8"))
     count = sum(len(g["rules"]) for g in expected["groups"])
     assert len(rules) == count, "Prometheus loaded a different rule set (restart it after editing)"
-    assert [r["name"] for r in rules if r.get("health") != "ok"] == []
+    unhealthy = {
+        r["name"]: (r.get("health"), r.get("lastError")) for r in rules if r.get("health") != "ok"
+    }
+    assert unhealthy == {}, f"rules that failed to evaluate: {unhealthy}"
     # Give "for:" clauses a chance; PipelineStale etc. must still be quiet on a fresh demo run.
     firing = [r["name"] for r in rules if r.get("state") == "firing"]
     allowed = (
