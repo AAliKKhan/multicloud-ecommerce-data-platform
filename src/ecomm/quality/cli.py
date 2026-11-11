@@ -15,9 +15,10 @@ from datetime import timedelta
 from pathlib import Path
 
 from ecomm.demo import SOURCE
+from ecomm.lake.stores import open_lake
 from ecomm.quality.checks import QualityContext
 from ecomm.quality.runner import persist_report, run_quality_suite
-from ecomm.storage.local import LocalObjectStore
+from ecomm.storage.interface import StorageConfigError
 from ecomm.warehouse.client import utcnow
 from ecomm.warehouse.duckdb_client import DuckDBClient
 
@@ -36,9 +37,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {warehouse} not found; run 'uv run ecomm-demo' first")
         return 2
 
-    s3 = LocalObjectStore(root / "lake" / "s3-local", name="s3-local")
-    gcs = LocalObjectStore(root / "lake" / "gcs-local", name="gcs-local")
-    control = LocalObjectStore(root / "lake" / "control", name="control")
+    try:
+        lake = open_lake(root)
+    except StorageConfigError as exc:
+        print(f"error: {exc}")
+        return 2
+    s3, control = lake.s3, lake.control
     client = DuckDBClient(warehouse)
     try:
         ctx = QualityContext(
@@ -46,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             source=SOURCE,
             now=utcnow(),
             primary_store=s3,
-            lake_stores={"s3-local": s3, "gcs-local": gcs},
+            lake_stores=lake.destinations,
             control_store=control,
             freshness_sla=timedelta(hours=args.sla_hours),
         )

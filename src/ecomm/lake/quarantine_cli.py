@@ -18,8 +18,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ecomm.storage.interface import ObjectStore
-from ecomm.storage.local import LocalObjectStore
+from ecomm.lake.stores import open_lake
+from ecomm.storage.interface import ObjectStore, StorageConfigError
 
 HINTS = {
     "INVALID_JSON": "Truncated or non-JSON message. Check the producer; payload is preserved for replay.",
@@ -82,11 +82,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    lake = args.demo_dir / "lake" / "s3-local"
-    if not lake.is_dir():
-        print(f"error: {lake} not found; run 'uv run ecomm-demo' first")
+    try:
+        lake = open_lake(args.demo_dir)
+    except StorageConfigError as exc:
+        print(f"error: {exc}")
         return 2
-    records = load_quarantine(LocalObjectStore(lake, name="s3-local"), args.source)
+    if lake.s3_directory is not None and not lake.s3_directory.is_dir():
+        print(f"error: {lake.s3_directory} not found; run 'uv run ecomm-demo' first")
+        return 2
+    records = load_quarantine(lake.s3, args.source)
     if args.code:
         records = [r for r in records if r["error_code"] == args.code]
 

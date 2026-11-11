@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,7 @@ from ecomm.lake.parity import reconcile_all
 from ecomm.lake.raw import prepare_batch
 from ecomm.lake.sources import messages_from_emissions
 from ecomm.lake.stats import IngestStats, record_ingest_stats
-from ecomm.storage.local import LocalObjectStore
+from ecomm.lake.stores import open_lake
 from ecomm.warehouse.duckdb_client import DuckDBClient
 from ecomm.warehouse.loader import WarehouseLoader
 
@@ -48,13 +49,21 @@ def _split(events: list[IngestedEvent], parts: int) -> list[list[IngestedEvent]]
     return [ordered[i : i + size] for i in range(0, len(ordered), size)]
 
 
-def run_batch_demo(config: GeneratorConfig, root: Path, batches: int = 3) -> dict[str, Any]:
-    """Run the whole batch path under ``root`` and return an auditable summary."""
+def run_batch_demo(
+    config: GeneratorConfig,
+    root: Path,
+    batches: int = 3,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run the whole batch path under ``root`` and return an auditable summary.
+
+    The S3 side of the raw zone is a local directory unless ``ECOMM_S3_BACKEND=minio`` (or ``env``)
+    selects a MinIO bucket; see :mod:`ecomm.lake.stores`.
+    """
     root.mkdir(parents=True, exist_ok=True)
-    s3 = LocalObjectStore(root / "lake" / "s3-local", name="s3-local")
-    gcs = LocalObjectStore(root / "lake" / "gcs-local", name="gcs-local")
-    control = LocalObjectStore(root / "lake" / "control", name="control")
-    stores = {"s3-local": s3, "gcs-local": gcs}
+    lake = open_lake(root, env)
+    s3, control = lake.s3, lake.control
+    stores = lake.destinations
 
     generated = generate(config)
     processed_at = config.end
@@ -112,9 +121,10 @@ def run_batch_demo(config: GeneratorConfig, root: Path, batches: int = 3) -> dic
         "warehouse_load_ok": report.ok,
         "warehouse_file": str(warehouse),
         "products_seed": str(root / "products.csv"),
+        "s3_backend": s3.name,
         "note": (
-            "s3-local/gcs-local are local directories standing in for S3/GCS; "
-            "DuckDB stands in for BigQuery."
+            f"{s3.name} and gcs-local stand in for S3 and GCS ({s3.name} is a local directory "
+            "unless it is a MinIO bucket); DuckDB stands in for BigQuery."
         ),
     }
     (root / "demo_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

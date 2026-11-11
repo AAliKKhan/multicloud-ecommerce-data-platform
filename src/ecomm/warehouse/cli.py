@@ -18,8 +18,9 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+from ecomm.lake.stores import open_lake
 from ecomm.orchestration.ids import InvalidRunIdError, sanitize_run_id
-from ecomm.storage.local import LocalObjectStore
+from ecomm.storage.interface import StorageConfigError
 from ecomm.warehouse.client import utcnow
 from ecomm.warehouse.duckdb_client import DuckDBClient
 from ecomm.warehouse.loader import WarehouseLoader
@@ -40,9 +41,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    lake = args.demo_dir / "lake" / "s3-local"
-    if not lake.is_dir():
-        print(f"error: {lake} not found; produce a lake first (ecomm-demo or the Spark job)")
+    try:
+        lake = open_lake(args.demo_dir)
+    except StorageConfigError as exc:
+        print(f"error: {exc}")
+        return 2
+    if lake.s3_directory is not None and not lake.s3_directory.is_dir():
+        print(
+            f"error: {lake.s3_directory} not found; "
+            "produce a lake first (ecomm-demo or the Spark job)"
+        )
         return 2
     start = args.start or date(2000, 1, 1)
     end = args.end or (utcnow().date() + timedelta(days=1))
@@ -58,10 +66,10 @@ def main(argv: list[str] | None = None) -> int:
 
     client = DuckDBClient(args.demo_dir / "warehouse.duckdb")
     try:
-        report = WarehouseLoader(
-            client, LocalObjectStore(lake, name="s3-local"), args.source
-        ).backfill(start, end, run_id, skip_succeeded=args.only_new)
-        report.write(LocalObjectStore(args.demo_dir / "lake" / "control", name="control"))
+        report = WarehouseLoader(client, lake.s3, args.source).backfill(
+            start, end, run_id, skip_succeeded=args.only_new
+        )
+        report.write(lake.control)
     finally:
         client.close()
     print(json.dumps(report.to_json_dict(), indent=2))

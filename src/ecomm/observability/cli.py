@@ -25,6 +25,7 @@ from prometheus_client.core import GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
 from ecomm.demo import SOURCE
+from ecomm.lake.stores import open_lake
 from ecomm.logging_utils import get_logger, log
 from ecomm.observability.metrics import (
     Snapshot,
@@ -33,16 +34,14 @@ from ecomm.observability.metrics import (
     snapshot_to_families,
 )
 from ecomm.quality.checks import QualityContext
-from ecomm.storage.local import LocalObjectStore
 from ecomm.warehouse.client import utcnow
 from ecomm.warehouse.duckdb_client import DuckDBClient
 
 
 def snapshot_for_demo_dir(root: Path, parity: str = "full") -> Snapshot:
     """Collect a snapshot from a demo directory (read-only warehouse access)."""
-    s3 = LocalObjectStore(root / "lake" / "s3-local", name="s3-local")
-    gcs = LocalObjectStore(root / "lake" / "gcs-local", name="gcs-local")
-    control = LocalObjectStore(root / "lake" / "control", name="control")
+    lake = open_lake(root)  # a bad backend setting surfaces as ecomm_exporter_ready 0
+    s3, control = lake.s3, lake.control
     client = DuckDBClient(root / "warehouse.duckdb", read_only=True)
     try:
         ctx = QualityContext(
@@ -50,7 +49,7 @@ def snapshot_for_demo_dir(root: Path, parity: str = "full") -> Snapshot:
             source=SOURCE,
             now=utcnow(),
             primary_store=s3,
-            lake_stores={"s3-local": s3, "gcs-local": gcs},
+            lake_stores=lake.destinations,
             control_store=control,
             freshness_sla=timedelta(hours=24),
         )

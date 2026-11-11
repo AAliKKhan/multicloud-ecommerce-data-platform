@@ -9,7 +9,8 @@ count and the checksum of the set of event IDs. Exit code 0 = all batches match,
 one batch differs or is missing on one side, 2 = the lake directories do not exist. The report
 is also written to the control store (``reports/reconciliation/<run_id>.json``).
 
-Local substitutes: ``s3-local`` and ``gcs-local`` are directories standing in for S3 and GCS.
+Local substitutes: ``s3-local`` (or the ``s3-minio`` bucket when ``ECOMM_S3_BACKEND=minio``) and
+``gcs-local`` stand in for S3 and GCS.
 """
 
 from __future__ import annotations
@@ -21,8 +22,9 @@ from typing import Any
 
 from ecomm.contracts.types import format_utc
 from ecomm.lake.parity import ParityReport, reconcile_all
+from ecomm.lake.stores import open_lake
 from ecomm.orchestration.ids import InvalidRunIdError, sanitize_run_id
-from ecomm.storage.local import LocalObjectStore
+from ecomm.storage.interface import StorageConfigError
 from ecomm.warehouse.client import utcnow
 
 
@@ -61,24 +63,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print the full report as JSON")
     args = parser.parse_args(argv)
 
-    root: Path = args.demo_dir / "lake"
-    for name in ("s3-local", "gcs-local"):
-        if not (root / name).is_dir():
-            print(f"error: {root / name} not found; produce a lake first (ecomm-demo or Spark)")
+    try:
+        lake = open_lake(args.demo_dir)
+    except StorageConfigError as exc:
+        print(f"error: {exc}")
+        return 2
+    for directory in lake.local_directories:
+        if not directory.is_dir():
+            print(f"error: {directory} not found; produce a lake first (ecomm-demo or Spark)")
             return 2
     try:
         run_id = sanitize_run_id(args.run_id or f"reconcile-{utcnow():%Y%m%dT%H%M%SZ}")
     except InvalidRunIdError as exc:
         print(f"error: {exc}")
         return 2
-    stores = {
-        "s3-local": LocalObjectStore(root / "s3-local", name="s3-local"),
-        "gcs-local": LocalObjectStore(root / "gcs-local", name="gcs-local"),
-    }
-    reports = reconcile_all(stores, args.source)
+    reports = reconcile_all(lake.destinations, args.source)
     result = report_to_dict(run_id, reports)
-    control = LocalObjectStore(root / "control", name="control")
-    control.write_object(
+    lake.control.write_object(
         f"reports/reconciliation/{run_id}.json", (json.dumps(result, indent=2) + "\n").encode()
     )
 
