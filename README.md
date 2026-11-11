@@ -106,7 +106,7 @@ flowchart LR
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | 4 DAGs: daily load, dbt + tests, cross-cloud reconciliation, parameterized backfill | In use |
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
 | Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Compose: Kafka, Kafka UI, Spark; Airflow, monitoring next | Partly built |
-| Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Exporter, alert rules and dashboard JSON written; the services themselves not run yet | Configs tested, services not run |
+| Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Pipeline + Kafka exporters, 12 alert rules, provisioned dashboard (loopback only, generated login) | In use |
 | BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Static HTML dashboard today; Metabase planned | Stand-in built |
 
 ## Events at a glance
@@ -139,7 +139,7 @@ services are integrated last.
 | M6 | Idempotent warehouse loader (`MERGE`) | Done (DuckDB verified, BigQuery unverified) |
 | M7 | dbt staging, intermediate and mart models | Done (DuckDB verified, BigQuery syntax-checked only) |
 | M8 | Airflow DAGs | Done (4 DAGs run in real Airflow 2.10.5; DuckDB stands in for BigQuery) |
-| M9 | Data quality and observability | Partly done: quality suite, quarantine tool, metrics, alert rules and Grafana JSON written and tested; Prometheus/Grafana not run (Docker) |
+| M9 | Data quality and observability | Done: quality suite, quarantine tool, exporter, 12 alert rules (run through the real Prometheus rule engine) and a Grafana dashboard, all running in Docker. Spark driver and Airflow metrics are not scraped |
 | M10 | BI dashboard and portfolio polish | Partly done: static HTML dashboard (stand-in for Metabase); Metabase, screenshots from real services and demo recording pending |
 
 Cloud code (S3, GCS, BigQuery) is developed behind interfaces and tested with
@@ -214,11 +214,11 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Airflow DAGs | Parsed by real Airflow (retries, timeouts, pool, dataset trigger asserted on the task objects) and run end to end; a retry recovered a real failure | Passing: replays inserted 0 rows; totals identical to the standalone run |
 | Kafka producer | 31 unit tests (fake + real client with no broker) and 8 integration tests on the real broker | Passing: delivery, keys to partitions, per-key order, headers, failures visible |
 | Data-quality suite | 17 checks, healthy and deliberately broken runs, on real dbt output | Passing |
-| Metrics, alert rules, Grafana JSON | Exporter tests; alerts evaluated in a simulated failure | Passing; **Prometheus/Grafana not run** |
+| Metrics, alert rules, Grafana | `promtool` runs each alert through the real rule engine (fires when broken, quiet when healthy); with the live stack: targets up, rules loaded, Grafana locked down and provisioned, every dashboard query runs through Grafana | Passing locally and in CI |
 | Business dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
 
-The running Prometheus/Grafana stack and Metabase are not built yet. No
-cloud resource has been created and no cloud account is required.
+Metabase is not built yet. No cloud resource has been created and no cloud
+account is required.
 
 ## Kafka (Docker)
 
@@ -262,6 +262,20 @@ bounded retries, timeouts and a one-slot pool for the single-writer DuckDB file.
 runs separately. Details and troubleshooting: [docs/airflow.md](docs/airflow.md). Needs about 2.5 GB:
 stop Kafka and Spark first on an 8 GB machine.
 
+## Monitoring (Prometheus and Grafana)
+
+```bash
+python docker/monitoring/generate_env.py --print-password   # once: random Grafana login, git-ignored
+docker compose up -d kafka
+docker compose --profile monitoring up -d --build
+# Prometheus http://127.0.0.1:9090   Grafana http://127.0.0.1:3000 (user admin)
+```
+
+A pipeline exporter (served from a background-refreshed snapshot, so scrapes take milliseconds) and a Kafka
+exporter feed Prometheus; 12 alert rules and one dashboard (pipeline health, streaming lag, business totals in a
+separate row) are provisioned into Grafana. Details, measured behaviour and limits:
+[docs/monitoring.md](docs/monitoring.md).
+
 ## Quality, metrics and dashboard
 
 ```bash
@@ -300,6 +314,7 @@ Details in [observability and quality](docs/observability-and-quality.md).
 - [Docker stack: Kafka, topics, producer](docs/docker.md)
 - [Spark streaming job](docs/spark.md)
 - [Airflow orchestration](docs/airflow.md)
+- [Monitoring: Prometheus and Grafana](docs/monitoring.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License
