@@ -278,10 +278,12 @@ jobs:
       - name: Validate the compose file with the bi profile
         run: docker compose --profile bi config --quiet
 
-      # A real warehouse to publish, and random secrets (database roles, Metabase admin).
-      - name: Generate demo data and the BI secrets
+      # A real warehouse with built marts to publish (ecomm-demo stops before dbt), and random
+      # secrets (database roles, Metabase admin).
+      - name: Generate demo data, build the marts with dbt, and create the BI secrets
         run: |
           uv run ecomm-demo --out data/demo --orders 120 --days 3 --batches 3 > /dev/null
+          DBT_DUCKDB_PATH="$PWD/data/demo/warehouse.duckdb" uv run dbt build --project-dir dbt --profiles-dir dbt --target duckdb
           python docker/bi/generate_env.py
 
       - name: Start Postgres and Metabase
