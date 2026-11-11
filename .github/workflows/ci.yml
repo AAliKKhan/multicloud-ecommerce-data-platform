@@ -210,3 +210,53 @@ jobs:
       - name: Task logs (on failure)
         if: failure()
         run: tail -n 150 airflow-dags-test.log || true
+
+  monitoring:
+    name: Prometheus and Grafana (real services in Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with extras)
+        run: uv sync --locked --all-extras
+
+      - name: Validate the compose file with the monitoring profile
+        run: docker compose --profile monitoring config --quiet
+
+      # promtool checks the config and rules and runs alerts_test.yml through the REAL rule engine
+      # (every alert must be shown to fire in a broken scenario and to stay quiet in a healthy one).
+      - name: Pull the pinned Prometheus image
+        run: docker pull prom/prometheus:v3.5.0
+
+      - name: Prometheus config, rules and rule unit tests
+        run: uv run pytest tests/integration/test_monitoring.py -v -k "promtool or rule_engine or every_alert"
+
+      # A real lake and warehouse for the exporter to read, a random Grafana login, then the stack.
+      - name: Generate demo data and the Grafana secret
+        run: |
+          uv run ecomm-demo --out data/spark --orders 120 --days 3 --batches 3 > /dev/null
+          python docker/monitoring/generate_env.py
+
+      - name: Start Kafka with its topics
+        run: |
+          docker compose up -d --wait kafka
+          docker compose run --rm kafka-init
+
+      - name: Start the monitoring stack
+        run: docker compose --profile monitoring up -d --build --wait ecomm-exporter kafka-exporter prometheus grafana
+
+      - name: Targets, rules, Grafana provisioning and every dashboard query
+        run: uv run pytest tests/integration/test_monitoring.py -v -k "not promtool and not rule_engine and not every_alert"
+
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose --profile monitoring logs --tail 60
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose --profile monitoring down -v
