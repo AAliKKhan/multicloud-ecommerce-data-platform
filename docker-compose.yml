@@ -315,8 +315,75 @@ services:
       start_period: 30s
     mem_limit: 384m
 
+  # --- BI: Metabase over a published copy of the marts (profile "bi") ---
+  # First time:
+  #   python docker/bi/generate_env.py --print-login      # random secrets, git-ignored
+  #   docker compose --profile bi up -d
+  #   uv run ecomm-bi publish && uv run ecomm-bi provision
+  # Metabase http://127.0.0.1:3001. About 1.2 GB in total; stop Kafka UI and Spark first on 8 GB RAM.
+  metabase-postgres:
+    profiles: ["bi"]
+    image: postgres:16-alpine
+    container_name: ecomm-metabase-postgres
+    restart: unless-stopped
+    env_file:
+      - path: docker/bi/.env
+        required: false # a missing file is reported by init-databases.sh with instructions
+      - path: docker/bi/.env.postgres # superuser password: this container only
+        required: false
+    volumes:
+      - ./docker/bi/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+      - metabase-pgdata:/var/lib/postgresql/data
+    ports:
+      # Holds the published marts for the host-side publisher. Loopback only.
+      - "127.0.0.1:${BI_POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: ecomm_admin
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecomm_admin -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 256m
+
+  metabase:
+    profiles: ["bi"]
+    image: metabase/metabase:v0.65.3
+    container_name: ecomm-metabase
+    restart: unless-stopped
+    depends_on:
+      metabase-postgres:
+        condition: service_healthy
+    env_file:
+      - path: docker/bi/.env
+        required: false # a missing file is reported by require-secrets.sh with instructions
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: metabase-postgres
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: metabase
+      MB_ANON_TRACKING_ENABLED: "false"
+      MB_CHECK_FOR_UPDATES: "false"
+      JAVA_OPTS: "-Xmx768m"
+    entrypoint: ["/bin/sh", "/require-secrets.sh", "MB_DB_PASS", "/app/run_metabase.sh"]
+    volumes:
+      - ./docker/bi/require-secrets.sh:/require-secrets.sh:ro
+    ports:
+      # Login is required, but keep it on loopback anyway. Do not expose this port.
+      - "127.0.0.1:${METABASE_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    mem_limit: 1100m
+
 volumes:
   kafka-data:
+  metabase-pgdata:
   airflow-pgdata:
   airflow-logs:
   prometheus-data:
