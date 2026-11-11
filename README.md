@@ -122,13 +122,13 @@ Regenerate both images from the live stacks with `uv run --with playwright pytho
 | CI | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) | Lint, types, tests on every push | In use |
 | Broker | ![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?logo=apachekafka&logoColor=white) | Durable event transport (single-node KRaft) + Kafka UI | In use |
 | Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events (Structured Streaming, one container) | In use |
-| Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds; local directories stand in today | Adapters built, cloud unverified |
+| Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds. The S3 side can run on a real S3-compatible server (MinIO, built from patched source); GCS is still a local directory | S3 adapter verified against MinIO; AWS and GCS unverified |
 | Catalog | ![Glue](https://img.shields.io/badge/AWS_Glue_Catalog-FF9900?logo=amazonwebservices&logoColor=white) | Metadata for the S3 copy | Planned |
 | Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Client built, unverified |
 | Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | 19 models, 85+ tests; runs on DuckDB, BigQuery SQL syntax-checked | In use |
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | 4 DAGs: daily load, dbt + tests, cross-cloud reconciliation, parameterized backfill | In use |
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
-| Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Compose: Kafka, Kafka UI, Spark; Airflow, monitoring next | Partly built |
+| Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Compose profiles: Kafka and Kafka UI, Spark, Airflow, monitoring, BI (Metabase), MinIO | In use |
 | Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Pipeline + Kafka exporters, 12 alert rules, provisioned dashboard (loopback only, generated login) | In use |
 | BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Metabase dashboard over a published copy of the marts (13 questions, read-only database role); a static HTML dashboard remains as a no-Docker fallback | In use |
 
@@ -163,7 +163,7 @@ services are integrated last.
 | M7 | dbt staging, intermediate and mart models | Done (DuckDB verified, BigQuery syntax-checked only) |
 | M8 | Airflow DAGs | Done (4 DAGs run in real Airflow 2.10.5; DuckDB stands in for BigQuery) |
 | M9 | Data quality and observability | Done: quality suite, quarantine tool, exporter, 12 alert rules (run through the real Prometheus rule engine) and a Grafana dashboard, all running in Docker. Spark driver and Airflow metrics are not scraped |
-| M10 | BI dashboard and portfolio polish | Partly done: Metabase dashboard running in Docker, numbers checked against the marts; screenshots committed to the repo and a demo recording pending |
+| M10 | BI dashboard and portfolio polish | Partly done: Metabase dashboard running in Docker, numbers checked against the marts; real Grafana and Metabase screenshots committed; a demo recording pending |
 
 Cloud code (S3, GCS, BigQuery) is developed behind interfaces and tested with
 `moto` and fakes. It stays marked **unverified** until run against real accounts.
@@ -240,6 +240,7 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Metrics, alert rules, Grafana | `promtool` runs each alert through the real rule engine (fires when broken, quiet when healthy); with the live stack: targets up, rules loaded, Grafana locked down and provisioned, every dashboard query runs through Grafana | Passing locally and in CI |
 | Static HTML dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
 | Metabase dashboard | Live stack: every question runs, dashboard numbers equal the DuckDB marts, provisioning is idempotent, the database role is read-only, the API refuses anonymous callers | Passing locally and in CI; the layout was checked by eye in a browser |
+| MinIO as local S3 | Live server: adapter contract, least-privilege policy (identical to the Terraform role), byte-identical raw zone and the same warehouse events as the local backend, replay writes nothing, an unreachable endpoint gives PARTIAL then heals | 20 live tests passing locally; CI job added. **Does not prove AWS behaviour** (see the ADR) |
 
 No cloud resource has been created and no cloud account is required.
 
@@ -299,6 +300,22 @@ exporter feed Prometheus; 12 alert rules and one dashboard (pipeline health, str
 separate row) are provisioned into Grafana. Details, measured behaviour and limits:
 [docs/monitoring.md](docs/monitoring.md).
 
+## Local S3 (MinIO)
+
+```bash
+python docker/minio/generate_env.py --print-login   # once: random secrets, git-ignored
+docker compose --profile minio up -d --build        # compiles MinIO from pinned source: the first build is slow
+docker compose --profile minio run --rm minio-init  # private versioned bucket, least-privilege user
+$env:ECOMM_S3_BACKEND = "minio"                     # then: uv run ecomm-demo --out data/minio-demo
+```
+
+With one setting, the S3 copy of the raw zone is written to a real S3-compatible server through the same adapter
+that will talk to AWS, using a user whose permissions match the Terraform pipeline role. Running against a real
+server found two defects that no fake had (an unreachable destination crashed the whole commit; both are fixed
+and tested). MinIO upstream is archived and no longer ships images, so the image is built from the patched source
+tag; the ADR explains why and what MinIO cannot prove about AWS. Spark, Airflow and the exporter containers are not
+yet wired to it. Details: [docs/minio.md](docs/minio.md).
+
 ## Business dashboard (Metabase)
 
 ```bash
@@ -355,6 +372,7 @@ Details in [observability and quality](docs/observability-and-quality.md).
 - [Airflow orchestration](docs/airflow.md)
 - [Monitoring: Prometheus and Grafana](docs/monitoring.md)
 - [Business dashboard: Metabase](docs/bi-dashboard.md)
+- [Local S3 with MinIO](docs/minio.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License
