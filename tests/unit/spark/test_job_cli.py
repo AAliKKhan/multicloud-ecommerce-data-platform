@@ -18,22 +18,37 @@ ecomm.spark.sink.OffsetGapError: batch itest-b00002: 3 partition(s) lost message
 """
 
 
-def test_failure_summary_prefers_our_own_error_line() -> None:
+def test_failure_summary_prefers_our_own_error_message() -> None:
     summary = summarize_failure(STACK)
     assert summary.startswith("ecomm.spark.sink.OffsetGapError: batch itest-b00002")
     assert "lost messages between Kafka and the sink" in summary
-    assert "\n" not in summary and "at org.apache" not in summary
+    assert "\n" not in summary
+
+
+def test_a_traceback_source_line_naming_the_error_is_not_mistaken_for_the_message() -> None:
+    """Seen in a real run: the traceback shows `raise OffsetGapError(` before the message."""
+    text = (
+        'File "/app/src/ecomm/spark/sink.py", line 313, in process_batch\n'
+        "    raise OffsetGapError(\n"
+        "ecomm.spark.sink.OffsetGapError: batch itest-b00003: 2 partition(s) lost messages "
+        "between Kafka and the sink\n"
+    )
+    summary = summarize_failure(text)
+    assert summary.startswith("ecomm.spark.sink.OffsetGapError: batch itest-b00003")
 
 
 @pytest.mark.parametrize("name", ["BatchConflictError", "BatchCommitError"])
 def test_other_pipeline_errors_are_also_recognised(name: str) -> None:
-    assert summarize_failure(f"noise\nmodule.{name}: reason here\nmore").endswith("reason here")
+    summary = summarize_failure(f"noise\nmodule.{name}: reason here\nmore")
+    assert summary.startswith(f"module.{name}: reason here") and "noise" not in summary
 
 
-def test_unknown_failures_are_collapsed_and_truncated() -> None:
-    text = "line one\n   line two\n" + "x" * 2000
-    summary = summarize_failure(text, limit=50)
-    assert summary == (" ".join(text.split()))[:50] and len(summary) == 50
+def test_unknown_failures_keep_the_tail_where_a_traceback_names_the_exception() -> None:
+    text = "Traceback (most recent call last):\n" + "frame " * 500 + "\nKeyError: 'the real cause'"
+    summary = summarize_failure(text, limit=60)
+    assert len(summary) == 60 and summary.startswith("...")
+    assert summary.endswith("KeyError: 'the real cause'")
+    assert summarize_failure("short\ntext") == "short text"
 
 
 def test_defaults_describe_a_safe_local_run() -> None:

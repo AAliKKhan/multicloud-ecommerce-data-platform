@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -176,7 +177,9 @@ def make_sink_config(cfg: JobConfig) -> SinkConfig:
     return SinkConfig(source=cfg.source, run_id=cfg.run_id, stores=stores, control_store=control)
 
 
-_OUR_ERRORS = ("OffsetGapError", "BatchConflictError", "BatchCommitError")
+_OUR_ERROR_MESSAGE = re.compile(
+    r"(?:[\w.]*\.)?(?:OffsetGapError|BatchConflictError|BatchCommitError): "
+)
 
 
 def summarize_failure(text: str, limit: int = 600) -> str:
@@ -185,10 +188,14 @@ def summarize_failure(text: str, limit: int = 600) -> str:
     Spark wraps a Python exception from ``foreachBatch`` in a long Java/Py4J stack trace; the
     useful part is our own error line, so prefer it over the first characters.
     """
-    for line in text.splitlines():
-        if any(name in line for name in _OUR_ERRORS):
-            return line.strip()[:limit]
-    return " ".join(text.split())[:limit]
+    collapsed_all = " ".join(text.split())
+    # "module.OffsetGapError: message" (not a traceback source line such as `raise OffsetGapError(`)
+    match = _OUR_ERROR_MESSAGE.search(collapsed_all)
+    if match:
+        return collapsed_all[match.start() :][:limit]
+    # A Python traceback ends with the exception that matters, so keep the tail, not the head.
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else "..." + collapsed[-(limit - 3) :]
 
 
 def _trigger_kwargs(trigger: str) -> dict[str, Any]:
@@ -288,7 +295,11 @@ def run(cfg: JobConfig) -> int:
             state.remove()
         else:
             state.update((int(new_state),))
-            state.setTimeoutTimestamp(int(new_state) + retention_ms)
+            # Spark rejects an expiry at or before the watermark (INVALID_TIMEOUT_TIMESTAMP).
+            # That happens when the retention is shorter than the data's time spread; the
+            # state then simply expires on the next batch instead of crashing the query.
+            expiry = max(int(new_state) + retention_ms, state.getCurrentWatermarkMs() + 1)
+            state.setTimeoutTimestamp(expiry)
         yield pd.DataFrame(marked, columns=COLUMNS)
 
     reader = (
