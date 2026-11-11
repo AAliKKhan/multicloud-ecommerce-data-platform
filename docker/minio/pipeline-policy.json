@@ -1,0 +1,37 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListPipelinePrefixes",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::__BUCKET__"],
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "raw/", "manifests/", "quarantine/", "ledger/", "reports/",
+            "raw/*", "manifests/*", "quarantine/*", "ledger/*", "reports/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadWritePipelineObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"],
+      "Resource": [
+        "arn:aws:s3:::__BUCKET__/raw/*",
+        "arn:aws:s3:::__BUCKET__/manifests/*",
+        "arn:aws:s3:::__BUCKET__/quarantine/*",
+        "arn:aws:s3:::__BUCKET__/ledger/*",
+        "arn:aws:s3:::__BUCKET__/reports/*"
+      ]
+    },
+    {
+      "Sid": "BucketLocation",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation"],
+      "Resource": ["arn:aws:s3:::__BUCKET__"]
+    }
+  ]
+}

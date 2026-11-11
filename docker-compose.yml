@@ -381,9 +381,71 @@ services:
       start_period: 120s
     mem_limit: 1100m
 
+  # --- MinIO: a local S3-compatible server for the raw zone (profile "minio") ---
+  # Built from a pinned, patched source tag (upstream is archived): see docs/minio.md.
+  #   python docker/minio/generate_env.py      # random secrets, git-ignored
+  #   docker compose --profile minio up -d --build
+  #   set ECOMM_S3_BACKEND=minio               # the pipeline then writes the S3 side here
+  # API http://127.0.0.1:9000, console http://127.0.0.1:9001. About 0.2 GB.
+  minio:
+    profiles: ["minio"]
+    image: ecomm-minio:2025-10-15
+    build:
+      context: docker/minio
+    container_name: ecomm-minio
+    restart: unless-stopped
+    env_file:
+      - path: docker/minio/.env.root # root credentials: this container and minio-init only
+        required: false # a missing file is reported by require-secrets.sh with instructions
+    entrypoint:
+      - /bin/sh
+      - /require-secrets.sh
+      - MINIO_ROOT_USER,MINIO_ROOT_PASSWORD
+      - minio
+      - server
+      - /data
+      - --address
+      - ":9000"
+      - --console-address
+      - ":9001"
+    volumes:
+      - ./docker/minio/require-secrets.sh:/require-secrets.sh:ro
+      - minio-data:/data
+    ports:
+      # Credentials are required, but keep both on loopback anyway. Do not expose these ports.
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 384m
+
+  minio-init:
+    profiles: ["minio"]
+    image: ecomm-minio:2025-10-15
+    container_name: ecomm-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - path: docker/minio/.env.root
+        required: false
+      - path: docker/minio/.env # bucket name and the pipeline user to create
+        required: false
+    entrypoint: ["/bin/sh", "/init.sh"]
+    volumes:
+      - ./docker/minio/init.sh:/init.sh:ro
+      - ./docker/minio/pipeline-policy.json:/policy.json:ro
+    mem_limit: 128m
+
 volumes:
   kafka-data:
   metabase-pgdata:
+  minio-data:
   airflow-pgdata:
   airflow-logs:
   prometheus-data:
