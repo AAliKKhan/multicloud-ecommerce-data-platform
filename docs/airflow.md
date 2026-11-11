@@ -87,6 +87,8 @@ scrape.
 | `quality_checks` fails | A check FAILED; run `ecomm-quality` for the table. Warnings never fail the task. |
 | `reconcile_destinations` fails | See `<data dir>/lake/control/reports/reconciliation/<run_id>.json`; re-commit the batch to the lagging destination (docs/operations.md). |
 | Database lock error | Another process holds the DuckDB file (for example a local `dbt build`). Stop it; the pool only serialises Airflow tasks. |
+| *Permission denied* creating a file under `lake/control/...` | Two different container users wrote the same data directory (for example the stack as UID 50000, then a one-off container as UID 1001); the second cannot write into folders the first created. Use one user per data directory (`AIRFLOW_UID`), or `chmod -R a+rwX` the directory once. CI uses a single user and a fresh directory. |
+| `airflow db migrate` says the user has no username | A one-off `docker run --user <uid>:0 --entrypoint bash` skipped the official entrypoint, which normally creates the user entry. `scripts/airflow_dags_smoke.sh` sets `USER`/`LOGNAME` itself; do the same in your own commands. |
 
 ## Streaming lifecycle (separate from Airflow)
 
@@ -101,6 +103,10 @@ is lost. If Spark is down, Airflow simply finds nothing new and skips.
 - Verified here: all four DAGs import in a real Airflow 2.10.5; a complete workflow ran (daily load, then
   the dataset-triggered dbt run with tests, quality checks and dashboard); the retry policy recovered a real
   failure; `max_active_runs` queued concurrent runs; the pool serialised warehouse tasks.
+- Verified in CI on every push: `airflow dags test` runs all four DAGs against a freshly generated lake as a
+  non-root user and must print `ALL_DAGS_OK`; then the project's own quality suite and the reconciliation
+  run on the warehouse the DAGs built. (An earlier version of that step passed while running nothing; it now
+  keeps the exit code through the pipe and requires the explicit marker, with a test guarding both.)
 - Not verified: BigQuery as the warehouse, real S3/GCS, multi-worker executors, and email/Slack alerting.
 - Memory: Airflow plus Kafka plus Spark together do not fit in 5 GB; run Airflow with Kafka stopped (it does
   not need Kafka).
