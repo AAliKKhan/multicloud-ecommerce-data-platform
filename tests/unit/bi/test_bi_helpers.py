@@ -123,6 +123,16 @@ def test_generated_secrets_are_random_split_and_private(
     assert (tmp_path / ".env").read_text(encoding="utf-8") != before
 
 
+def test_admin_password_meets_metabase_complexity_policy() -> None:
+    generator = _generator()
+    for _ in range(200):
+        password = generator.admin_password()  # type: ignore[attr-defined]
+        assert len(password) >= 20
+        assert any(c.islower() for c in password) and any(c.isupper() for c in password)
+        assert sum(c.isdigit() for c in password) >= 2
+        assert any(c in "-_" for c in password)
+
+
 def test_dashboard_questions_are_unique_and_only_read_published_marts() -> None:
     assert len(QUESTIONS_BY_KEY) == len(QUESTIONS)
     assert len({q.name for q in QUESTIONS}) == len(QUESTIONS)  # names identify cards on re-runs
