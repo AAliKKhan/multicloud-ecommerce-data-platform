@@ -152,6 +152,51 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  spark-minio:
+    name: Spark to MinIO end to end (Kafka, Spark, MinIO in Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with extras)
+        run: uv sync --locked --all-extras
+
+      - name: Validate the compose file with both profiles
+        run: docker compose --profile spark --profile minio config --quiet
+
+      # Python 3.11 + Java 17 + PySpark + the Kafka connector jars + boto3 (several minutes).
+      - name: Build the Spark image
+        run: docker compose --profile spark build spark
+
+      # MinIO is compiled from the pinned, patched source tag (see docs/decisions/0015).
+      - name: Build the MinIO image from source
+        run: docker compose --profile minio build minio
+
+      - name: Create the secrets, start Kafka and MinIO, run the MinIO init job
+        run: |
+          python docker/minio/generate_env.py
+          docker compose --profile minio up -d --wait kafka minio
+          docker compose --profile minio run --rm minio-init
+
+      # Crash after a commit, MinIO stopped (the job must fail fast and write nothing), restart,
+      # rerun; the result must equal the reference ingest, both destinations must be identical,
+      # and the warehouse loaded from MinIO must not double count.
+      - name: Spark to MinIO integration tests
+        run: uv run pytest tests/integration/test_spark_minio.py -v
+
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose --profile minio logs --tail 80 kafka minio
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose --profile minio --profile spark down -v
+
   airflow:
     name: Airflow DAGs (real Airflow in Docker)
     runs-on: ubuntu-latest
