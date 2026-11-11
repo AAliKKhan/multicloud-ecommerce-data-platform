@@ -24,7 +24,7 @@ from prometheus_client.core import GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
 from ecomm.lake.manifest import BatchManifest, manifest_key
-from ecomm.lake.parity import list_batch_ids, reconcile_all
+from ecomm.lake.parity import list_batch_ids, reconcile_all, reconcile_all_light
 from ecomm.lake.stats import list_ingest_stats
 from ecomm.quality.checks import QualityContext
 from ecomm.quality.models import CheckStatus
@@ -70,7 +70,13 @@ def _ts(value: datetime) -> float:
     return (value if value.tzinfo else value.replace(tzinfo=UTC)).timestamp()
 
 
-def collect_snapshot(ctx: QualityContext) -> Snapshot:
+def collect_snapshot(ctx: QualityContext, parity: str = "full") -> Snapshot:
+    """Collect every metric section.
+
+    ``parity="full"`` re-reads and hashes every raw object in both destinations (right for a
+    one-shot export or a daily job); ``"light"`` compares manifests and object presence only,
+    which is cheap enough to run every minute against a lake of thousands of files.
+    """
     snap = Snapshot(now=ctx.now, errors=dict.fromkeys(SECTIONS, 0))
     snap.batches = dict.fromkeys(BATCH_STATUSES, 0)
     snap.load_attempts = dict.fromkeys(LOAD_STATUSES, 0)
@@ -138,7 +144,8 @@ def collect_snapshot(ctx: QualityContext) -> Snapshot:
 
     try:  # cross-cloud parity
         if len(ctx.lake_stores) >= 2:
-            reports = reconcile_all(ctx.lake_stores, ctx.source)
+            check = reconcile_all_light if parity == "light" else reconcile_all
+            reports = check(ctx.lake_stores, ctx.source)
             snap.parity_checked = len(reports)
             snap.parity_mismatched = sum(1 for r in reports if not r.ok)
     except StorageError:

@@ -12,7 +12,7 @@ from prometheus_client import generate_latest
 from prometheus_client.parser import text_string_to_metric_families
 
 from ecomm.lake.manifest import manifest_key
-from ecomm.observability.cli import families_or_error, snapshot_for_demo_dir
+from ecomm.observability.cli import CachedCollector, families_or_error, snapshot_for_demo_dir
 from ecomm.observability.cli import main as metrics_main
 from ecomm.observability.metrics import (
     Snapshot,
@@ -155,6 +155,10 @@ def test_every_metric_in_alerts_and_dashboard_exists(demo_dir: Path) -> None:
     exposed |= {s.name for f in families_or_error(demo_dir) for s in f.samples}
     # Families that legitimately have no series yet (no Spark progress recorded) still exist:
     exposed |= {f.name for f in snapshot_to_families(snapshot_for_demo_dir(demo_dir))}
+    # The long-running exporter adds its own freshness metrics around a cached snapshot:
+    cached = CachedCollector(demo_dir, parity="light")
+    cached.refresh()
+    exposed |= {s.name for f in cached.collect() for s in f.samples}
     referenced: set[str] = set()
     referenced |= set(re.findall(r"\becomm_[a-z_]+", ALERTS.read_text()))
     dashboard = json.loads(DASHBOARD.read_text())
@@ -342,6 +346,111 @@ def test_a_corrupt_spark_progress_file_only_breaks_its_own_section(demo_dir: Pat
     (folder / "batch_id=bad.json").write_text("{not json")
     snap = snapshot_for_demo_dir(demo_dir)
     assert snap.errors["spark"] == 1 and snap.errors["lake"] == 0 and snap.events_committed > 0
+
+
+def test_light_and_full_parity_give_the_same_numbers_on_a_healthy_lake(demo_dir: Path) -> None:
+    full = snapshot_for_demo_dir(demo_dir, "full")
+    light = snapshot_for_demo_dir(demo_dir, "light")
+    assert (light.parity_checked, light.parity_mismatched) == (full.parity_checked, 0) == (2, 0)
+
+
+def test_light_parity_still_sees_a_cloud_that_lost_a_manifest(demo_dir: Path) -> None:
+    manifest = next((demo_dir / "lake" / "gcs-local" / "manifests").rglob("manifest.json"))
+    manifest.unlink()
+    assert snapshot_for_demo_dir(demo_dir, "light").parity_mismatched == 1
+
+
+def make_collector(compute: Any, clock: Any = None, refresh: float = 60.0) -> CachedCollector:
+    return CachedCollector(
+        Path("."), refresh, parity="light", clock=clock or (lambda: 100.0), compute=compute
+    )
+
+
+def one_family(value: float = 7.0) -> list[Any]:
+    from prometheus_client.core import GaugeMetricFamily
+
+    return [GaugeMetricFamily("ecomm_x", "x", value=value)]
+
+
+def test_a_scrape_before_the_first_refresh_says_starting_and_computes_nothing() -> None:
+    calls: list[str] = []
+    collector = make_collector(lambda root, parity: calls.append(parity) or one_family())
+    assert flat(list(collector.collect())) == [
+        ("ecomm_exporter_ready", {"reason": "starting"}, 0.0)
+    ]
+    assert calls == []
+
+
+def test_scrapes_serve_the_last_snapshot_with_its_age_and_never_recompute() -> None:
+    clock = [100.0]
+    calls: list[str] = []
+    collector = make_collector(
+        lambda root, parity: calls.append(parity) or one_family(), clock=lambda: clock[0]
+    )
+    collector.refresh()
+    clock[0] = 145.0
+    for _ in range(5):
+        served = {n: v for n, _, v in flat(list(collector.collect()))}
+    assert served["ecomm_x"] == 7.0 and served["ecomm_exporter_snapshot_age_seconds"] == 45.0
+    assert served["ecomm_exporter_refresh_duration_seconds"] == 0.0
+    assert calls == ["light"]  # one refresh, five scrapes
+
+
+def test_a_slow_computation_never_blocks_a_scrape() -> None:
+    import threading
+    import time
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow(root: Path, parity: str) -> list[Any]:
+        entered.set()
+        release.wait(timeout=10)
+        return one_family(1.0)
+
+    collector = make_collector(slow, refresh=0.05)
+    collector.start()
+    try:
+        assert entered.wait(timeout=5)
+        started = time.monotonic()
+        answer = flat(list(collector.collect()))
+        assert time.monotonic() - started < 0.5  # answered while the refresh is still running
+        assert answer == [("ecomm_exporter_ready", {"reason": "starting"}, 0.0)]
+        release.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if any(n == "ecomm_x" for n, _, _ in flat(list(collector.collect()))):
+                break
+            time.sleep(0.02)
+        assert any(n == "ecomm_x" for n, _, _ in flat(list(collector.collect())))
+    finally:
+        collector.stop()
+        release.set()
+
+
+def test_the_refresher_survives_a_crashing_computation_and_recovers() -> None:
+    import time
+
+    attempts = {"n": 0}
+
+    def flaky(root: Path, parity: str) -> list[Any]:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("boom")
+        return one_family()
+
+    collector = make_collector(flaky, refresh=0.02)
+    collector.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(
+            n == "ecomm_x" for n, _, _ in flat(list(collector.collect()))
+        ):
+            time.sleep(0.02)
+        assert any(n == "ecomm_x" for n, _, _ in flat(list(collector.collect())))
+        assert attempts["n"] >= 2
+    finally:
+        collector.stop()
 
 
 def test_no_spark_progress_means_no_offset_series_not_zeros(demo_dir: Path) -> None:
