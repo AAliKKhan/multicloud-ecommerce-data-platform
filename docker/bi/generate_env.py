@@ -1,13 +1,14 @@
 """Generate the secrets for the BI stack (random, local, git-ignored).
 
-    python docker/bi/generate_env.py                    # creates docker/bi/.env and docker/bi/.env.postgres
+    python docker/bi/generate_env.py     # creates docker/bi/.env and docker/bi/.env.postgres
     python docker/bi/generate_env.py --print-login
 
 Two files, so the Postgres superuser password is only ever given to the Postgres container:
 
 * ``.env.postgres``: the superuser password (read by the Postgres container only).
-* ``.env``: the three application role passwords, the Metabase admin login, and ``MB_DB_PASS``
-  (the name Metabase itself reads). Read by Metabase, Postgres (to create the roles) and the host tools.
+* ``.env``: the three application role passwords, the Metabase admin login, and
+  ``MB_DB_PASS`` (the name Metabase itself reads). Read by Metabase, by Postgres (to create the
+  roles) and by the host tools.
 
 Existing files are not overwritten (``--force`` replaces both). Standard library only.
 """
