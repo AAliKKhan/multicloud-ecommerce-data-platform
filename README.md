@@ -107,7 +107,7 @@ flowchart LR
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
 | Local stack | ![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white) | Compose: Kafka, Kafka UI, Spark; Airflow, monitoring next | Partly built |
 | Monitoring | ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white) ![Grafana](https://img.shields.io/badge/Grafana-F46800?logo=grafana&logoColor=white) | Pipeline + Kafka exporters, 12 alert rules, provisioned dashboard (loopback only, generated login) | In use |
-| BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Static HTML dashboard today; Metabase planned | Stand-in built |
+| BI | ![Metabase](https://img.shields.io/badge/Metabase-509EE3?logo=metabase&logoColor=white) | Metabase dashboard over a published copy of the marts (13 questions, read-only database role); a static HTML dashboard remains as a no-Docker fallback | In use |
 
 ## Events at a glance
 
@@ -140,7 +140,7 @@ services are integrated last.
 | M7 | dbt staging, intermediate and mart models | Done (DuckDB verified, BigQuery syntax-checked only) |
 | M8 | Airflow DAGs | Done (4 DAGs run in real Airflow 2.10.5; DuckDB stands in for BigQuery) |
 | M9 | Data quality and observability | Done: quality suite, quarantine tool, exporter, 12 alert rules (run through the real Prometheus rule engine) and a Grafana dashboard, all running in Docker. Spark driver and Airflow metrics are not scraped |
-| M10 | BI dashboard and portfolio polish | Partly done: static HTML dashboard (stand-in for Metabase); Metabase, screenshots from real services and demo recording pending |
+| M10 | BI dashboard and portfolio polish | Partly done: Metabase dashboard running in Docker, numbers checked against the marts; screenshots committed to the repo and a demo recording pending |
 
 Cloud code (S3, GCS, BigQuery) is developed behind interfaces and tested with
 `moto` and fakes. It stays marked **unverified** until run against real accounts.
@@ -215,10 +215,10 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Kafka producer | 31 unit tests (fake + real client with no broker) and 8 integration tests on the real broker | Passing: delivery, keys to partitions, per-key order, headers, failures visible |
 | Data-quality suite | 17 checks, healthy and deliberately broken runs, on real dbt output | Passing |
 | Metrics, alert rules, Grafana | `promtool` runs each alert through the real rule engine (fires when broken, quiet when healthy); with the live stack: targets up, rules loaded, Grafana locked down and provisioned, every dashboard query runs through Grafana | Passing locally and in CI |
-| Business dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
+| Static HTML dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
+| Metabase dashboard | Live stack: every question runs, dashboard numbers equal the DuckDB marts, provisioning is idempotent, the database role is read-only, the API refuses anonymous callers | Passing locally; the layout was checked by eye in a browser |
 
-Metabase is not built yet. No cloud resource has been created and no cloud
-account is required.
+No cloud resource has been created and no cloud account is required.
 
 ## Kafka (Docker)
 
@@ -276,6 +276,22 @@ exporter feed Prometheus; 12 alert rules and one dashboard (pipeline health, str
 separate row) are provisioned into Grafana. Details, measured behaviour and limits:
 [docs/monitoring.md](docs/monitoring.md).
 
+## Business dashboard (Metabase)
+
+```bash
+uv run ecomm-demo                                  # a warehouse to show (if data/demo does not exist yet)
+python docker/bi/generate_env.py --print-login     # once: random secrets, git-ignored
+docker compose --profile bi up -d                  # Postgres + Metabase, first start takes a few minutes
+uv run ecomm-bi all                                # publish the marts, then build the dashboard
+# Metabase http://127.0.0.1:3001 (user admin@ecomm.local)
+```
+
+Metabase reads a copy of the four curated marts from Postgres (published in one transaction, so the dashboard
+never shows a half-updated state) through a read-only role. The dashboard covers net sales, orders, average order
+value, payment outcomes, top products and categories, low stock and data freshness, and is labelled as synthetic
+demo data. It is defined as code and rebuilt idempotently. Needs about 1.2 GB. Details:
+[docs/bi-dashboard.md](docs/bi-dashboard.md).
+
 ## Quality, metrics and dashboard
 
 ```bash
@@ -315,6 +331,7 @@ Details in [observability and quality](docs/observability-and-quality.md).
 - [Spark streaming job](docs/spark.md)
 - [Airflow orchestration](docs/airflow.md)
 - [Monitoring: Prometheus and Grafana](docs/monitoring.md)
+- [Business dashboard: Metabase](docs/bi-dashboard.md)
 - Architecture decisions: [`docs/decisions/`](docs/decisions)
 
 ## License
