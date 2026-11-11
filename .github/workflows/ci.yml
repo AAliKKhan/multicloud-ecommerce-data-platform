@@ -305,3 +305,44 @@ jobs:
       - name: Stop and remove containers and volumes
         if: always()
         run: docker compose --profile bi down -v
+
+  minio:
+    name: MinIO as a local S3 (real server in Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with extras)
+        run: uv sync --locked --all-extras
+
+      - name: Validate the compose file with the minio profile
+        run: docker compose --profile minio config --quiet
+
+      # MinIO is archived upstream and no longer published as an image, so it is compiled from the
+      # pinned, patched source tag (several minutes). See docs/decisions/0015-minio-local-s3.md.
+      - name: Build the MinIO image from source
+        run: docker compose --profile minio build minio
+
+      - name: Create the secrets, start MinIO and run the init job
+        run: |
+          python docker/minio/generate_env.py
+          docker compose --profile minio up -d --wait minio
+          docker compose --profile minio run --rm minio-init
+
+      # Adapter contract over real HTTP, the least-privilege policy, byte-identical raw zone versus
+      # the local backend, replay, and an unreachable endpoint.
+      - name: MinIO integration tests
+        run: uv run pytest tests/integration/test_minio.py -v
+
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose --profile minio logs --tail 80
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose --profile minio down -v
