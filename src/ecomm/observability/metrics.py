@@ -34,7 +34,7 @@ from ecomm.warehouse.schema import LOAD_AUDIT, RAW_EVENTS
 
 BATCH_STATUSES = ("COMPLETE", "PARTIAL", "FAILED")
 LOAD_STATUSES = ("SUCCEEDED", "FAILED")
-SECTIONS = ("lake", "warehouse", "ingest", "parity", "quality", "business")
+SECTIONS = ("lake", "warehouse", "ingest", "spark", "parity", "quality", "business")
 
 
 @dataclass
@@ -52,6 +52,10 @@ class Snapshot:
     ingest_duplicates: int = 0
     ingest_quarantined: int = 0
     ingest_late: int = 0
+    # Spark keeps its own offsets (no Kafka consumer group), so consumer lag is derived:
+    # kafka end offset (from the Kafka exporter) minus this "next offset to read".
+    spark_next_offsets: dict[tuple[str, int], int] = field(default_factory=dict)
+    spark_last_batch_ts: float | None = None
     parity_checked: int = 0
     parity_mismatched: int = 0
     quality_checks: dict[str, int] = field(default_factory=dict)
@@ -116,6 +120,21 @@ def collect_snapshot(ctx: QualityContext) -> Snapshot:
                 snap.ingest_late += stats.late
     except (StorageError, ValueError, KeyError):
         snap.errors["ingest"] = 1
+
+    try:  # Spark progress: offsets processed per topic partition
+        if ctx.control_store is not None:
+            for key in ctx.control_store.list_objects(f"spark/source={ctx.source}/"):
+                progress = json.loads(ctx.control_store.read_object(key))
+                for tp, (_, high) in progress["offsets"].items():
+                    topic, _, partition = tp.rpartition("/")
+                    slot = (topic, int(partition))
+                    snap.spark_next_offsets[slot] = max(
+                        snap.spark_next_offsets.get(slot, 0), high + 1
+                    )
+                recorded = datetime.fromisoformat(progress["recorded_at"]).timestamp()
+                snap.spark_last_batch_ts = max(snap.spark_last_batch_ts or 0.0, recorded)
+    except (StorageError, ValueError, KeyError):
+        snap.errors["spark"] = 1
 
     try:  # cross-cloud parity
         if len(ctx.lake_stores) >= 2:
@@ -254,6 +273,21 @@ def snapshot_to_families(s: Snapshot) -> list[Metric]:
             "ecomm_scrape_timestamp_seconds", "Unix time of this collection.", s.now.timestamp()
         ),
     ]
+    offsets = GaugeMetricFamily(
+        "ecomm_spark_next_offset",
+        "Next Kafka offset the Spark job will read, per topic partition (lag = Kafka end - this).",
+        labels=["topic", "partition"],
+    )
+    for (topic, partition), next_offset in sorted(s.spark_next_offsets.items()):
+        offsets.add_metric([topic, str(partition)], next_offset)
+    families.append(offsets)
+    families.append(
+        _gauge(
+            "ecomm_spark_last_batch_timestamp_seconds",
+            "Unix time the Spark job last recorded a micro-batch (0 if never).",
+            s.spark_last_batch_ts or 0.0,
+        )
+    )
     return families
 
 

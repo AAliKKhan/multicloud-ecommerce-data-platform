@@ -5,21 +5,26 @@ uv run ecomm-metrics --demo-dir data/demo --textfile data/demo/metrics.prom
 
 # long-running: serve http://localhost:9108/metrics, recomputed on every scrape
 uv run ecomm-metrics --demo-dir data/demo --serve 9108
+
+# in a container: listen on every interface (the published port is loopback-only)
+uv run ecomm-metrics --demo-dir /data/pipeline --serve 9108 --addr 0.0.0.0
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
 
 from prometheus_client import CollectorRegistry, generate_latest, start_http_server
-from prometheus_client.core import Metric
+from prometheus_client.core import GaugeMetricFamily, Metric
 from prometheus_client.registry import Collector
 
 from ecomm.demo import SOURCE
+from ecomm.logging_utils import get_logger, log
 from ecomm.observability.metrics import (
     Snapshot,
     build_registry,
@@ -53,6 +58,37 @@ def snapshot_for_demo_dir(root: Path) -> Snapshot:
         client.close()
 
 
+def families_or_error(root: Path) -> list[Metric]:
+    """All metric families for one scrape, or a minimal "not ready" answer.
+
+    The warehouse may not exist yet, or a writer (a load, dbt) may hold DuckDB's file lock. That
+    must never turn into a failed scrape with no information: the exporter stays up and says
+    ``ecomm_exporter_ready 0`` with the reason class, so dashboards and alerts can show it.
+    """
+    try:
+        return snapshot_to_families(snapshot_for_demo_dir(root)) + [
+            _ready_family(1.0, ""),
+        ]
+    except Exception as exc:  # DuckDB IOException (lock), missing file, corrupt data ...
+        log(
+            get_logger("ecomm.exporter"),
+            logging.WARNING,
+            "snapshot failed",
+            error_type=type(exc).__name__,
+        )
+        return [_ready_family(0.0, type(exc).__name__)]
+
+
+def _ready_family(value: float, reason: str) -> Metric:
+    family = GaugeMetricFamily(
+        "ecomm_exporter_ready",
+        "1 when the pipeline data could be read for this scrape; reason is an exception class.",
+        labels=["reason"],
+    )
+    family.add_metric([reason], value)
+    return family
+
+
 class _LiveCollector(Collector):
     """Recomputes the snapshot on every scrape so values are never stale."""
 
@@ -60,7 +96,7 @@ class _LiveCollector(Collector):
         self._root = root
 
     def collect(self) -> Iterable[Metric]:
-        return snapshot_to_families(snapshot_for_demo_dir(self._root))
+        return families_or_error(self._root)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,9 +105,16 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--textfile", type=Path, help="write Prometheus text format and exit")
     mode.add_argument("--serve", type=int, metavar="PORT", help="serve /metrics on this port")
+    parser.add_argument(
+        "--addr",
+        default="127.0.0.1",
+        help="address for --serve (default: loopback; use 0.0.0.0 inside a container)",
+    )
     args = parser.parse_args(argv)
 
-    if not (args.demo_dir / "warehouse.duckdb").is_file():
+    # One-shot export needs the data now. The long-running server does not: it starts anyway and
+    # reports ecomm_exporter_ready 0 until the pipeline has produced a warehouse.
+    if args.textfile is not None and not (args.demo_dir / "warehouse.duckdb").is_file():
         print(
             f"error: {args.demo_dir / 'warehouse.duckdb'} not found; run 'uv run ecomm-demo' first"
         )
@@ -86,8 +129,10 @@ def main(argv: list[str] | None = None) -> int:
 
     live = CollectorRegistry()
     live.register(_LiveCollector(args.demo_dir))
-    start_http_server(args.serve, registry=live, addr="127.0.0.1")  # loopback only
-    print(f"serving metrics on http://127.0.0.1:{args.serve}/metrics (Ctrl+C to stop)")
+    start_http_server(args.serve, registry=live, addr=args.addr)
+    print(
+        f"serving metrics on http://{args.addr}:{args.serve}/metrics (Ctrl+C to stop)", flush=True
+    )
     try:
         while True:
             time.sleep(3600)
