@@ -165,6 +165,23 @@ def snapshot_local(store: LocalObjectStore) -> dict[str, bytes]:
     return {key: store.read_object(key) for key in store.list_objects()}
 
 
+def tree_snapshot(directory: Path) -> dict[str, bytes]:
+    """Every file under a directory (sidecars included), reading only: nothing is created.
+
+    The container (root) creates ``data/spark`` and everything under it; on Linux the host user then
+    cannot create directories there, and ``LocalObjectStore`` creates its folder when constructed.
+    Found in CI: constructing one before the container had run failed with PermissionError. So the
+    host only ever reads what the container wrote, exactly like ``test_spark.py``.
+    """
+    if not directory.is_dir():
+        return {}
+    return {
+        p.relative_to(directory).as_posix(): p.read_bytes()
+        for p in sorted(directory.rglob("*"))
+        if p.is_file()
+    }
+
+
 def wait_healthy(seconds: int = 120) -> None:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -248,14 +265,14 @@ def scenario() -> Iterator[Scenario]:
         oracle = classify(
             messages_from_emissions(emissions), set(), processed_at=START, late_threshold=LATE
         )
-        gcs = LocalObjectStore(host_dir / "lake" / "gcs-local", name="gcs-local")
+        gcs_dir = host_dir / "lake" / "gcs-local"  # written by the container; the host only reads
 
         # 1. crash right after batch 1 was committed to BOTH MinIO and the local GCS copy
         crash = run_job("--fail-after-commit-batch", "1")
         batches_after_crash = list_batch_ids(s3, source)
 
         # 2. MinIO is down: the job must fail fast, before Spark starts, writing nothing
-        gcs_before = snapshot_local(gcs)
+        gcs_before = tree_snapshot(gcs_dir)
         assert docker("compose", "--profile", "minio", "stop", "minio").returncode == 0
         try:
             started = time.monotonic()
@@ -264,7 +281,7 @@ def scenario() -> Iterator[Scenario]:
         finally:
             docker("compose", "--profile", "minio", "up", "-d", "--wait", "minio", timeout=300)
             wait_healthy()
-        gcs_after = snapshot_local(gcs)
+        gcs_after = tree_snapshot(gcs_dir)
 
         # 3. MinIO is back: restart from the checkpoint; batch 1 is replayed, then the rest
         resume = run_job()
@@ -329,6 +346,7 @@ def test_with_minio_down_the_job_fails_fast_and_writes_nothing(scenario: Scenari
     assert "destination s3-minio is not reachable" in output
     assert "starting query" not in output  # Spark never started
     assert scenario.outage_seconds < OUTAGE_BUDGET_S
+    assert scenario.gcs_before_outage, "the GCS copy was empty: the comparison below proves nothing"
     assert scenario.gcs_after_outage == scenario.gcs_before_outage  # no half-written side
     secret = read_env(APP_ENV)["ECOMM_S3_SECRET_KEY"]
     assert secret not in output  # credentials never reach the logs
