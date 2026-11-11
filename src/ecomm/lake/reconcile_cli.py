@@ -21,6 +21,7 @@ from typing import Any
 
 from ecomm.contracts.types import format_utc
 from ecomm.lake.parity import ParityReport, reconcile_all
+from ecomm.orchestration.ids import InvalidRunIdError, sanitize_run_id
 from ecomm.storage.local import LocalObjectStore
 from ecomm.warehouse.client import utcnow
 
@@ -65,7 +66,11 @@ def main(argv: list[str] | None = None) -> int:
         if not (root / name).is_dir():
             print(f"error: {root / name} not found; produce a lake first (ecomm-demo or Spark)")
             return 2
-    run_id = args.run_id or f"reconcile-{utcnow():%Y%m%dT%H%M%SZ}"
+    try:
+        run_id = sanitize_run_id(args.run_id or f"reconcile-{utcnow():%Y%m%dT%H%M%SZ}")
+    except InvalidRunIdError as exc:
+        print(f"error: {exc}")
+        return 2
     stores = {
         "s3-local": LocalObjectStore(root / "s3-local", name="s3-local"),
         "gcs-local": LocalObjectStore(root / "gcs-local", name="gcs-local"),

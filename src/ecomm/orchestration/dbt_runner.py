@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -36,9 +35,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ecomm.orchestration.ids import InvalidRunIdError
+from ecomm.orchestration.ids import sanitize_run_id as _sanitize_run_id
+
 DEFAULT_KEEP = 10
 _IGNORE = shutil.ignore_patterns("target", "logs", "dbt_packages", ".user.yml", "__pycache__")
-_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 CommandBuilder = Callable[[Path, Path, Sequence[str]], list[str]]
 
@@ -49,10 +50,10 @@ class DbtRunError(RuntimeError):
 
 def sanitize_run_id(run_id: str) -> str:
     """Make an arbitrary orchestrator run ID safe as a single directory name."""
-    cleaned = _SAFE.sub("_", run_id).strip("._")
-    if not cleaned:
-        raise DbtRunError("run id is empty after sanitising")
-    return cleaned[:120]
+    try:
+        return _sanitize_run_id(run_id)
+    except InvalidRunIdError as exc:
+        raise DbtRunError(str(exc)) from exc
 
 
 def default_command(project: Path, target: Path, extra: Sequence[str]) -> list[str]:

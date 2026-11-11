@@ -18,6 +18,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+from ecomm.orchestration.ids import InvalidRunIdError, sanitize_run_id
 from ecomm.storage.local import LocalObjectStore
 from ecomm.warehouse.client import utcnow
 from ecomm.warehouse.duckdb_client import DuckDBClient
@@ -45,7 +46,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     start = args.start or date(2000, 1, 1)
     end = args.end or (utcnow().date() + timedelta(days=1))
-    run_id = args.run_id or f"load-{utcnow():%Y%m%dT%H%M%SZ}"
+    try:
+        run_id = sanitize_run_id(args.run_id or f"load-{utcnow():%Y%m%dT%H%M%SZ}")
+    except InvalidRunIdError as exc:
+        print(f"error: {exc}")
+        return 2
 
     if end < start:
         print(f"error: --end {end} is before --start {start}")
