@@ -121,7 +121,7 @@ Regenerate both images from the live stacks with `uv run --with playwright pytho
 | Local warehouse | ![DuckDB](https://img.shields.io/badge/DuckDB-FFF000?logo=duckdb&logoColor=black) | Local stand-in for BigQuery (same loader, same dbt models) | In use |
 | CI | ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white) | Lint, types, tests on every push | In use |
 | Broker | ![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?logo=apachekafka&logoColor=white) | Durable event transport (single-node KRaft) + Kafka UI | In use |
-| Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events (Structured Streaming, one container) | In use |
+| Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events (Structured Streaming, one container); can land the S3 side in MinIO | In use |
 | Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds. The S3 side can run on a real S3-compatible server (MinIO, built from patched source); GCS is still a local directory | S3 adapter verified against MinIO; AWS and GCS unverified |
 | Catalog | ![Glue](https://img.shields.io/badge/AWS_Glue_Catalog-FF9900?logo=amazonwebservices&logoColor=white) | Metadata for the S3 copy | Planned |
 | Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Client built, unverified |
@@ -240,7 +240,8 @@ for BigQuery. See the [operations guide](docs/operations.md) and the
 | Metrics, alert rules, Grafana | `promtool` runs each alert through the real rule engine (fires when broken, quiet when healthy); with the live stack: targets up, rules loaded, Grafana locked down and provisioned, every dashboard query runs through Grafana | Passing locally and in CI |
 | Static HTML dashboard | Figures compared with the independent oracle; rendered in a browser | Matches |
 | Metabase dashboard | Live stack: every question runs, dashboard numbers equal the DuckDB marts, provisioning is idempotent, the database role is read-only, the API refuses anonymous callers | Passing locally and in CI; the layout was checked by eye in a browser |
-| MinIO as local S3 | Live server: adapter contract, least-privilege policy (identical to the Terraform role), byte-identical raw zone and the same warehouse events as the local backend, replay writes nothing, an unreachable endpoint gives PARTIAL then heals | 20 live tests passing locally; CI job added. **Does not prove AWS behaviour** (see the ADR) |
+| MinIO as local S3 | Live server: adapter contract, least-privilege policy (identical to the Terraform role), byte-identical raw zone and the same warehouse events as the local backend, replay writes nothing, an unreachable endpoint gives PARTIAL then heals | 20 live tests passing locally and in CI. **Does not prove AWS behaviour** (see the ADR) |
+| Spark to MinIO, end to end | Real Kafka, the real Spark container and real MinIO: crash after a commit, MinIO stopped (the job fails in seconds, before Spark starts, writing nothing), restart, rerun; result equals the reference ingest, both destinations byte-identical, offsets gapless, warehouse loaded from MinIO has no double counting | 13 live tests passing locally (about 18 minutes); CI job added, not yet confirmed. Not tested: MinIO dying mid-batch |
 
 No cloud resource has been created and no cloud account is required.
 
@@ -311,10 +312,12 @@ $env:ECOMM_S3_BACKEND = "minio"                     # then: uv run ecomm-demo --
 
 With one setting, the S3 copy of the raw zone is written to a real S3-compatible server through the same adapter
 that will talk to AWS, using a user whose permissions match the Terraform pipeline role. Running against a real
-server found two defects that no fake had (an unreachable destination crashed the whole commit; both are fixed
-and tested). MinIO upstream is archived and no longer ships images, so the image is built from the patched source
-tag; the ADR explains why and what MinIO cannot prove about AWS. Spark, Airflow and the exporter containers are not
-yet wired to it. Details: [docs/minio.md](docs/minio.md).
+server found three defects that no fake had (an unreachable destination crashed the whole commit, among them; all
+are fixed and tested). The Spark streaming job follows the same setting in its container, as the least-privilege
+user, and fails in seconds when MinIO is unreachable. MinIO upstream is archived and no longer ships images, so the
+image is built from the patched source tag; the ADR explains why and what MinIO cannot prove about AWS. The Airflow
+DAGs and the exporter container are not yet wired to it. Details: [docs/minio.md](docs/minio.md) and
+[docs/spark.md](docs/spark.md#landing-the-s3-side-in-minio).
 
 ## Business dashboard (Metabase)
 
