@@ -219,7 +219,105 @@ services:
       start_period: 90s
     mem_limit: 1g
 
+  # --- Monitoring (profile "monitoring": not started by default) -----------------------------
+  #   python docker/monitoring/generate_env.py --print-password    # once: random Grafana login
+  #   docker compose --profile monitoring up -d --build
+  # Prometheus http://127.0.0.1:9090, Grafana http://127.0.0.1:3000. About 0.8 GB in total.
+  ecomm-exporter:
+    profiles: ["monitoring"]
+    image: ecomm-exporter:1
+    build:
+      context: .
+      dockerfile: docker/exporter/Dockerfile
+    container_name: ecomm-exporter
+    restart: unless-stopped
+    volumes:
+      - ./src:/app/src:ro
+      - ${PIPELINE_DATA_DIR:-./data/spark}:/data/pipeline:ro
+    # No published port: only Prometheus (same network) scrapes it.
+    mem_limit: 256m
+
+  kafka-exporter:
+    profiles: ["monitoring"]
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: ecomm-kafka-exporter
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: ["--kafka.server=kafka:19092", "--topic.filter=^commerce\\.", "--group.filter=^$"]
+    # No published port. Spark tracks its own offsets (no consumer group), so group metrics are
+    # switched off by the empty filter; lag is derived from partition end offsets in Prometheus.
+    mem_limit: 128m
+
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:v3.5.0
+    container_name: ecomm-prometheus
+    restart: unless-stopped
+    depends_on:
+      - ecomm-exporter
+      - kafka-exporter
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle=false
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      # No authentication: loopback only. Do not expose this port.
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 512m
+
+  grafana:
+    profiles: ["monitoring"]
+    image: grafana/grafana:11.6.0
+    container_name: ecomm-grafana
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    env_file:
+      - path: docker/monitoring/.env
+        required: false # a missing file is reported by require-secret.sh with instructions
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipeline_health.json
+    entrypoint: ["/bin/sh", "/require-secret.sh", "/run.sh"]
+    volumes:
+      - ./docker/monitoring/require-secret.sh:/require-secret.sh:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      # Login is required, but keep it on loopback anyway. Do not expose this port.
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 384m
+
 volumes:
   kafka-data:
   airflow-pgdata:
   airflow-logs:
+  prometheus-data:
+  grafana-data:
