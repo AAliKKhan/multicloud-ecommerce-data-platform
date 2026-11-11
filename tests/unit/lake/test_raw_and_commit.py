@@ -169,6 +169,42 @@ def test_one_cloud_down_gives_partial_then_retry_completes_only_the_failed_one(
     assert reconcile_batch({"s3": s3, "gcs": gcs}, "commerce", "run-001-b00000").ok
 
 
+def test_a_destination_that_cannot_even_be_read_is_partial_not_a_crash(
+    prepared: PreparedBatch,
+) -> None:
+    """A real outage fails reads too. Found with MinIO: the manifest pre-check used to raise out of
+    ``commit_batch``, so no status was returned and the healthy destination was never written."""
+    s3 = FlakyObjectStore(InMemoryObjectStore("s3"))
+    gcs = FlakyObjectStore(InMemoryObjectStore("gcs"), fail_writes=10_000, fail_reads=10_000)
+    # The broken destination comes first, so a crash would also skip the healthy one.
+    result = commit_batch(prepared, {"gcs": gcs, "s3": s3}, retry=RetryPolicy(2), sleep=sleeper)
+
+    assert result.status is BatchStatus.PARTIAL
+    assert result.destinations["s3"].state is DestinationState.COMMITTED
+    assert result.destinations["gcs"].state is DestinationState.FAILED
+    assert (
+        result.destinations["gcs"].error and "simulated outage" in result.destinations["gcs"].error
+    )
+
+    gcs.fail_writes = gcs.fail_reads = 0  # outage over: the retry completes only the failed side
+    healed = commit_batch(prepared, {"gcs": gcs, "s3": s3}, sleep=sleeper)
+    assert healed.status is BatchStatus.COMPLETE
+    assert healed.destinations["s3"].already_committed
+
+
+def test_an_unreadable_manifest_on_a_committed_batch_just_rewrites_the_same_bytes(
+    prepared: PreparedBatch,
+) -> None:
+    s3 = FlakyObjectStore(InMemoryObjectStore("s3"))
+    assert commit_batch(prepared, {"s3": s3}, sleep=sleeper).status is BatchStatus.COMPLETE
+    before = {k: s3.inner.read_object(k) for k in s3.inner.list_objects()}
+
+    s3.fail_reads = 1  # one transient read failure on the 'already committed?' check
+    again = commit_batch(prepared, {"s3": s3}, sleep=sleeper)
+    assert again.status is BatchStatus.COMPLETE
+    assert {k: s3.inner.read_object(k) for k in s3.inner.list_objects()} == before  # idempotent
+
+
 def test_all_destinations_down_is_failed(prepared: PreparedBatch) -> None:
     down = {
         "s3": FlakyObjectStore(InMemoryObjectStore("s3"), fail_writes=10_000),

@@ -90,6 +90,11 @@ def _already_committed(store: ObjectStore, batch: PreparedBatch) -> bool:
         return False
     except ValueError:
         return False  # corrupt manifest: rewrite it
+    except StorageError:
+        # The destination could not be read (an outage, a timeout). We cannot say the batch is
+        # committed, so take the write path: it is idempotent (same keys, same bytes), retried with
+        # backoff, and records the failure per destination instead of aborting the whole commit.
+        return False
     return existing == batch.manifest
 
 

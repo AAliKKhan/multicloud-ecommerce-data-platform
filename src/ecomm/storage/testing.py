@@ -38,15 +38,22 @@ class FlakyObjectStore:
 
     ``fail_writes`` is the number of upcoming write attempts that raise
     :class:`StorageError`; use a very large number for a permanent outage, and
-    ``fail_keys_containing`` to restrict failures to matching keys.
+    ``fail_keys_containing`` to restrict failures to matching keys. ``fail_reads`` does the same for
+    the next read, list and existence calls: a real outage fails those too, and a double that only
+    failed writes once hid a crash in the commit layer.
     """
 
     def __init__(
-        self, inner: ObjectStore, fail_writes: int = 0, fail_keys_containing: str = ""
+        self,
+        inner: ObjectStore,
+        fail_writes: int = 0,
+        fail_keys_containing: str = "",
+        fail_reads: int = 0,
     ) -> None:
         self.inner = inner
         self.name = inner.name
         self.fail_writes = fail_writes
+        self.fail_reads = fail_reads
         self.fail_keys_containing = fail_keys_containing
         self.write_attempts: defaultdict[str, int] = defaultdict(int)
 
@@ -59,11 +66,19 @@ class FlakyObjectStore:
             raise StorageError(f"simulated outage writing {key}")
         self.inner.write_object(key, data, metadata)
 
+    def _maybe_fail_read(self, what: str) -> None:
+        if self.fail_reads > 0:
+            self.fail_reads -= 1
+            raise StorageError(f"simulated outage reading {what}")
+
     def read_object(self, key: str) -> bytes:
+        self._maybe_fail_read(key)
         return self.inner.read_object(key)
 
     def list_objects(self, prefix: str = "") -> list[str]:
+        self._maybe_fail_read(prefix or "<all>")
         return self.inner.list_objects(prefix)
 
     def object_exists(self, key: str) -> bool:
+        self._maybe_fail_read(key)
         return self.inner.object_exists(key)
