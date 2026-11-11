@@ -16,6 +16,7 @@ from pathlib import Path
 from ecomm.storage.interface import ObjectNotFoundError, StorageError, validate_key
 
 _META_SUFFIX = ".meta.json"
+_OBJECT_MODE = 0o644
 
 
 class LocalObjectStore:
@@ -51,6 +52,10 @@ class LocalObjectStore:
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
+            # mkstemp creates 0600 files. This store holds synthetic demo data and is also
+            # written by containers running as root (the Spark job) and read by the host
+            # user, so files must be world-readable like any normally created file.
+            os.chmod(tmp, _OBJECT_MODE)
             os.replace(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
