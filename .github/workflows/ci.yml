@@ -182,6 +182,7 @@ jobs:
       # as the runner's UID so it can write the bind-mounted directory.
       - name: Run all four DAGs end to end (airflow dags test)
         run: |
+          set -o pipefail   # the pipe into tee must not hide the container's exit code
           uv run ecomm-demo --out data/pipeline --orders 120 --days 3 --batches 3 > /dev/null
           rm -f data/pipeline/warehouse.duckdb   # the DAGs must load and model it themselves
           docker run --rm --user "$(id -u):0" \
@@ -194,7 +195,10 @@ jobs:
             -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////tmp/smoke.db \
             -e AIRFLOW__SCARF_ANALYTICS__SCARF_ANALYTICS=false \
             --entrypoint bash ecomm-airflow:2.10.5 /smoke.sh 2>&1 | tee airflow-dags-test.log
-          if grep -q DAG_FAILED airflow-dags-test.log; then echo "a DAG failed"; exit 1; fi
+          # Absence of a failure message is not success: all four DAGs must have reported it.
+          grep -q '^ALL_DAGS_OK$' airflow-dags-test.log || { echo "DAG smoke test did not complete"; exit 1; }
+          grep -q 'DAG_FAILED' airflow-dags-test.log && { echo "a DAG failed"; exit 1; }
+          test -f data/pipeline/warehouse.duckdb || { echo "the DAGs produced no warehouse"; exit 1; }
 
       # Independent check of what the DAGs produced: the project's own quality suite on the
       # warehouse Airflow built (exit code 1 on any FAIL), and the reconciliation.

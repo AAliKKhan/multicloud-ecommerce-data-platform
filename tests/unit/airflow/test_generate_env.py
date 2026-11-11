@@ -91,6 +91,30 @@ def test_print_password_only_when_asked(gen: ModuleType, tmp_path: Path,
     assert password in capsys.readouterr().out
 
 
+def test_the_ci_dag_smoke_step_cannot_pass_without_running_every_dag() -> None:
+    """Regression: `db migrate` failed in CI, the pipe into tee hid the exit code, and the step passed."""
+    repo = SCRIPT.parents[2]
+    smoke = (repo / "scripts" / "airflow_dags_smoke.sh").read_text(encoding="utf-8")
+    workflow = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # the script supplies a user name for an arbitrary UID and does not hide setup errors
+    assert "export USER=" in smoke and "airflow db migrate > /dev/null" not in smoke
+    assert smoke.rstrip().endswith(
+        'echo "ALL_DAGS_OK"'
+    )  # the marker is the very last thing printed
+    assert smoke.index("SMOKE_SETUP_FAILED") < smoke.rindex("ALL_DAGS_OK")
+    for dag in (
+        "raw_to_warehouse_daily",
+        "dbt_transform_and_test",
+        "cross_cloud_reconciliation",
+        "historical_backfill",
+    ):
+        assert dag in smoke
+    # the workflow keeps the exit code through the pipe and requires the positive marker
+    assert "set -o pipefail" in workflow
+    assert "grep -q '^ALL_DAGS_OK$' airflow-dags-test.log" in workflow
+    assert "data/pipeline/warehouse.duckdb" in workflow.split("ALL_DAGS_OK")[-1]
+
+
 def test_the_real_secrets_file_is_ignored_by_git_and_the_example_has_no_values() -> None:
     repo = SCRIPT.parents[2]
     example = parse((SCRIPT.parent / ".env.example").read_text())
