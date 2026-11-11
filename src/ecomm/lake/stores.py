@@ -41,16 +41,24 @@ _BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 
 
 @dataclass(frozen=True)
+class LakeLayout:
+    """Where the lake's local directories are. Pure: it creates nothing.
+
+    A reader checks these BEFORE opening the stores, because opening a local store creates its
+    directory; checked afterwards, "no lake yet" could never be detected.
+    """
+
+    s3_directory: Path | None  # None when the S3 side is a bucket (nothing to check on disk)
+    local_directories: tuple[Path, ...]  # every local directory a full reader needs
+
+
+@dataclass(frozen=True)
 class LakeStores:
     """The lake's stores. ``destinations`` are the raw-zone copies that must stay in parity."""
 
     s3: ObjectStore
     gcs: ObjectStore
     control: ObjectStore
-    # Local directories a reader needs to exist (a missing one means "no lake yet").
-    local_directories: tuple[Path, ...]
-    # The S3 side's directory, or None when it is a bucket (nothing to check on disk).
-    s3_directory: Path | None
 
     @property
     def destinations(self) -> dict[str, ObjectStore]:
@@ -103,27 +111,35 @@ def minio_store(
     )
 
 
+def lake_layout(root: Path, env: Mapping[str, str] | None = None) -> LakeLayout:
+    """The local directories the selected backend uses, without creating or opening anything."""
+    lake = root / "lake"
+    if selected_backend(env) == "minio":
+        return LakeLayout(s3_directory=None, local_directories=(lake / GCS_NAME,))
+    return LakeLayout(
+        s3_directory=lake / LOCAL_S3_NAME,
+        local_directories=(lake / LOCAL_S3_NAME, lake / GCS_NAME),
+    )
+
+
 def open_lake(
     root: Path,
     env: Mapping[str, str] | None = None,
     env_file: Path = DEFAULT_ENV_FILE,
 ) -> LakeStores:
-    """Build the lake stores under ``root`` for the backend selected by the environment."""
+    """Build the lake stores under ``root`` for the backend selected by the environment.
+
+    Opening a local store creates its directory; use :func:`lake_layout` first to check that a
+    lake exists.
+    """
     lake = root / "lake"
-    control = LocalObjectStore(lake / "control", name="control")
-    gcs = LocalObjectStore(lake / GCS_NAME, name=GCS_NAME)
+    s3: ObjectStore
     if selected_backend(env) == "minio":
-        return LakeStores(
-            s3=minio_store(env, env_file),
-            gcs=gcs,
-            control=control,
-            local_directories=(lake / GCS_NAME,),
-            s3_directory=None,
-        )
+        s3 = minio_store(env, env_file)
+    else:
+        s3 = LocalObjectStore(lake / LOCAL_S3_NAME, name=LOCAL_S3_NAME)
     return LakeStores(
-        s3=LocalObjectStore(lake / LOCAL_S3_NAME, name=LOCAL_S3_NAME),
-        gcs=gcs,
-        control=control,
-        local_directories=(lake / LOCAL_S3_NAME, lake / GCS_NAME),
-        s3_directory=lake / LOCAL_S3_NAME,
+        s3=s3,
+        gcs=LocalObjectStore(lake / GCS_NAME, name=GCS_NAME),
+        control=LocalObjectStore(lake / "control", name="control"),
     )

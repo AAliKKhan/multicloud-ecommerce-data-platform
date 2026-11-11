@@ -10,6 +10,7 @@ from ecomm.lake.stores import (
     BACKEND_VAR,
     LOCAL_S3_NAME,
     MINIO_S3_NAME,
+    lake_layout,
     minio_store,
     open_lake,
     selected_backend,
@@ -33,8 +34,9 @@ def test_the_default_backend_is_the_local_directory_so_nothing_changes_unless_as
     lake = open_lake(tmp_path, {})
     assert isinstance(lake.s3, LocalObjectStore) and lake.s3.name == LOCAL_S3_NAME
     assert set(lake.destinations) == {"s3-local", "gcs-local"}
-    assert lake.s3_directory == tmp_path / "lake" / "s3-local"
-    assert lake.local_directories == (
+    layout = lake_layout(tmp_path, {})
+    assert layout.s3_directory == tmp_path / "lake" / "s3-local"
+    assert layout.local_directories == (
         tmp_path / "lake" / "s3-local",
         tmp_path / "lake" / "gcs-local",
     )
@@ -46,10 +48,33 @@ def test_the_minio_backend_uses_the_s3_adapter_and_says_where_it_lives(tmp_path:
     assert lake.s3.name == MINIO_S3_NAME == "s3-minio"  # never mistaken for AWS
     assert lake.s3.bucket == "ecomm-raw-minio"
     assert set(lake.destinations) == {"s3-minio", "gcs-local"}
-    assert lake.s3_directory is None  # a bucket has no directory to check
-    assert lake.local_directories == (tmp_path / "lake" / "gcs-local",)
+    layout = lake_layout(tmp_path, MINIO_ENV)
+    assert layout.s3_directory is None  # a bucket has no directory to check
+    assert layout.local_directories == (tmp_path / "lake" / "gcs-local",)
     # The GCS side and the control store stay local in both modes.
     assert isinstance(lake.gcs, LocalObjectStore) and isinstance(lake.control, LocalObjectStore)
+
+
+def test_the_layout_creates_nothing_but_opening_the_stores_does(tmp_path: Path) -> None:
+    lake_layout(tmp_path, {})
+    assert not (tmp_path / "lake").exists()
+    open_lake(tmp_path, {})
+    # This is why a reader must check the layout BEFORE opening: afterwards it always exists.
+    assert (tmp_path / "lake" / "s3-local").is_dir()
+
+
+def test_every_reader_reports_a_missing_lake_and_does_not_create_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecomm.lake.quarantine_cli import main as quarantine
+    from ecomm.lake.reconcile_cli import main as reconcile
+    from ecomm.warehouse.cli import main as load
+
+    monkeypatch.delenv(BACKEND_VAR, raising=False)
+    nowhere = tmp_path / "none"
+    for tool in (quarantine, reconcile, load):
+        assert tool(["--demo-dir", str(nowhere)]) == 2
+    assert not nowhere.exists()  # a typo in --demo-dir must not leave an empty lake behind
 
 
 @pytest.mark.parametrize("value", ["", "  LOCAL ", "Local"])

@@ -22,7 +22,7 @@ from typing import Any
 
 from ecomm.contracts.types import format_utc
 from ecomm.lake.parity import ParityReport, reconcile_all
-from ecomm.lake.stores import open_lake
+from ecomm.lake.stores import lake_layout, open_lake
 from ecomm.orchestration.ids import InvalidRunIdError, sanitize_run_id
 from ecomm.storage.interface import StorageConfigError
 from ecomm.warehouse.client import utcnow
@@ -64,14 +64,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        lake = open_lake(args.demo_dir)
+        for directory in lake_layout(args.demo_dir).local_directories:
+            if not directory.is_dir():
+                print(f"error: {directory} not found; produce a lake first (ecomm-demo or Spark)")
+                return 2
+        lake = open_lake(args.demo_dir)  # opening creates local directories: check first
     except StorageConfigError as exc:
         print(f"error: {exc}")
         return 2
-    for directory in lake.local_directories:
-        if not directory.is_dir():
-            print(f"error: {directory} not found; produce a lake first (ecomm-demo or Spark)")
-            return 2
     try:
         run_id = sanitize_run_id(args.run_id or f"reconcile-{utcnow():%Y%m%dT%H%M%SZ}")
     except InvalidRunIdError as exc:

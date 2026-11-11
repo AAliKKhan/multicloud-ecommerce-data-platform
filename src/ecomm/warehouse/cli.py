@@ -18,7 +18,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
-from ecomm.lake.stores import open_lake
+from ecomm.lake.stores import lake_layout, open_lake
 from ecomm.orchestration.ids import InvalidRunIdError, sanitize_run_id
 from ecomm.storage.interface import StorageConfigError
 from ecomm.warehouse.client import utcnow
@@ -42,15 +42,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        lake = open_lake(args.demo_dir)
+        layout = lake_layout(args.demo_dir)
+        if layout.s3_directory is not None and not layout.s3_directory.is_dir():
+            print(
+                f"error: {layout.s3_directory} not found; "
+                "produce a lake first (ecomm-demo or the Spark job)"
+            )
+            return 2
+        lake = open_lake(args.demo_dir)  # opening creates local directories: check first
     except StorageConfigError as exc:
         print(f"error: {exc}")
-        return 2
-    if lake.s3_directory is not None and not lake.s3_directory.is_dir():
-        print(
-            f"error: {lake.s3_directory} not found; "
-            "produce a lake first (ecomm-demo or the Spark job)"
-        )
         return 2
     start = args.start or date(2000, 1, 1)
     end = args.end or (utcnow().date() + timedelta(days=1))

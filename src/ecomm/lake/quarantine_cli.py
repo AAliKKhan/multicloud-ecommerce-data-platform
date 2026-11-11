@@ -18,7 +18,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ecomm.lake.stores import open_lake
+from ecomm.lake.stores import lake_layout, open_lake
 from ecomm.storage.interface import ObjectStore, StorageConfigError
 
 HINTS = {
@@ -83,12 +83,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        lake = open_lake(args.demo_dir)
+        layout = lake_layout(args.demo_dir)
+        if layout.s3_directory is not None and not layout.s3_directory.is_dir():
+            print(f"error: {layout.s3_directory} not found; run 'uv run ecomm-demo' first")
+            return 2
+        lake = open_lake(args.demo_dir)  # opening creates local directories: check first
     except StorageConfigError as exc:
         print(f"error: {exc}")
-        return 2
-    if lake.s3_directory is not None and not lake.s3_directory.is_dir():
-        print(f"error: {lake.s3_directory} not found; run 'uv run ecomm-demo' first")
         return 2
     records = load_quarantine(lake.s3, args.source)
     if args.code:
