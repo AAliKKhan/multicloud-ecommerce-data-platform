@@ -34,6 +34,10 @@ EXPECTED_TABLES = {
 }
 
 
+# The synthetic-data notice is long; three grid rows show it fully, with no inner scrollbar.
+NOTICE_HEIGHT = 3
+
+
 class MetabaseError(RuntimeError):
     """A Metabase API call failed or the instance is not in the expected state."""
 
@@ -230,7 +234,7 @@ def ensure_dashboard(client: MetabaseClient, collection_id: int, card_ids: dict[
             "row": 0,
             "col": 0,
             "size_x": 24,
-            "size_y": 2,
+            "size_y": NOTICE_HEIGHT,
             "visualization_settings": {
                 "virtual_card": {
                     "name": None,
@@ -249,7 +253,7 @@ def ensure_dashboard(client: MetabaseClient, collection_id: int, card_ids: dict[
             {
                 "id": -index,
                 "card_id": card_ids[question.key],
-                "row": question.row,
+                "row": question.row + NOTICE_HEIGHT - 2,  # spec rows leave 2 rows for the notice
                 "col": question.col,
                 "size_x": question.width,
                 "size_y": question.height,
