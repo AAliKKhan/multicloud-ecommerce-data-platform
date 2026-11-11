@@ -123,6 +123,23 @@ tests:
             exp_annotations:
               summary: The exporter is up but cannot read the warehouse (not built yet, or locked by a writer).
 
+  - name: the exporter's background refresher gets stuck
+    interval: 1m
+    input_series:
+      - series: 'ecomm_exporter_snapshot_age_seconds'
+        values: '900x30'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ExporterSnapshotStale
+        exp_alerts: []  # still inside for: 5m
+      - eval_time: 10m
+        alertname: ExporterSnapshotStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The pipeline exporter has not refreshed its snapshot for over 10 minutes (refresher stuck or too slow).
+
   - name: a scrape target and the Kafka broker go down
     interval: 1m
     input_series:
@@ -201,6 +218,8 @@ tests:
         values: '0x40'
       - series: 'ecomm_exporter_ready{reason=""}'
         values: '1x40'
+      - series: 'ecomm_exporter_snapshot_age_seconds'
+        values: '30x40'
       - series: 'up{job="kafka", instance="kafka-exporter:9308"}'
         values: '1x40'
       - series: 'kafka_brokers'
@@ -218,6 +237,7 @@ tests:
       - {eval_time: 30m, alertname: DataQualityChecksFailing, exp_alerts: []}
       - {eval_time: 30m, alertname: MetricsCollectionBroken, exp_alerts: []}
       - {eval_time: 30m, alertname: ExporterCannotReadPipelineData, exp_alerts: []}
+      - {eval_time: 30m, alertname: ExporterSnapshotStale, exp_alerts: []}
       - {eval_time: 30m, alertname: ScrapeTargetDown, exp_alerts: []}
       - {eval_time: 30m, alertname: KafkaBrokerDown, exp_alerts: []}
       - {eval_time: 30m, alertname: SparkConsumerLagHigh, exp_alerts: []}

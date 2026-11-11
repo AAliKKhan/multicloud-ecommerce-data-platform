@@ -83,6 +83,14 @@ groups:
         annotations:
           summary: A monitored endpoint cannot be scraped (label job says which one).
 
+      - alert: ExporterSnapshotStale
+        expr: ecomm_exporter_snapshot_age_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The pipeline exporter has not refreshed its snapshot for over 10 minutes (refresher stuck or too slow).
+
       - alert: KafkaBrokerDown
         expr: kafka_brokers < 1
         for: 3m
