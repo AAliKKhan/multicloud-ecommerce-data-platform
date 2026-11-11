@@ -197,7 +197,15 @@ def test_the_pipeline_user_can_do_its_job_and_nothing_more(
     assert denied(client.list_objects_v2, Bucket=bucket) == "AccessDenied"
     assert denied(client.list_objects_v2, Bucket=bucket, Prefix="elsewhere/") == "AccessDenied"
     # No bucket administration at all.
-    assert denied(client.list_buckets) == "AccessDenied"
+    # MinIO answers ListBuckets with only the buckets the user may use (AWS answers AccessDenied).
+    # Either way the pipeline user must see no bucket but its own, even when another one exists.
+    other = f"ecomm-it-hidden-{uuid.uuid4().hex[:8]}"
+    root_client.create_bucket(Bucket=other)
+    try:
+        visible = {b["Name"] for b in client.list_buckets().get("Buckets", [])}
+        assert visible <= {bucket} and other not in visible
+    finally:
+        root_client.delete_bucket(Bucket=other)
     assert denied(client.create_bucket, Bucket=f"ecomm-it-{uuid.uuid4().hex[:8]}") == "AccessDenied"
     assert (
         denied(
@@ -318,7 +326,7 @@ def test_the_raw_zone_in_minio_is_byte_identical_to_the_local_one(runs: dict[str
     assert local_keys, "the local run wrote nothing"
     minio_keys = [k for k in remote.list_objects("raw/") + remote.list_objects("manifests/")
                   + remote.list_objects("quarantine/") if f"source={SOURCE}/" in k or f"/{SOURCE}/" in k]  # fmt: skip
-    assert minio_keys == sorted(local_keys)
+    assert sorted(minio_keys) == sorted(local_keys)
     for key in local_keys:
         assert remote.read_object(key) == local.read_object(key), key
 
