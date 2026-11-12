@@ -48,7 +48,7 @@ still use local directories): the Airflow DAGs and the metrics exporter containe
 
 ## What is verified
 
-`tests/integration/test_minio.py` runs 20 checks against the live server (also in CI, job `minio`):
+`tests/integration/test_minio.py` runs 21 checks against the live server (also in CI, job `minio`):
 
 - **Adapter contract over real HTTP:** round trip, overwrite, sorted prefix listing, binary data, the real key
   layout, "missing object" semantics, invalid keys rejected before any request.
@@ -71,7 +71,7 @@ minutes on this 5 GB machine (four Spark runs).
 
 ## Found by running it
 
-Three real defects, all fixed test-first and covered by unit tests: `commit_batch` crashed when a destination could
+Three real defects, plus one documented risk now mitigated, all fixed test-first and covered by unit tests: `commit_batch` crashed when a destination could
 not be *read* (so one unreachable cloud lost the whole commit instead of giving PARTIAL), a refactor had made the
 "no lake yet" checks always pass, and the Spark sink's pre-write conflict check let a raw storage error escape
 when a destination was unreadable. Details in the ADR.
@@ -80,9 +80,16 @@ when a destination was unreadable. Details in the ADR.
 
 MinIO is not AWS. In particular, AWS is documented to answer 403 (not 404) for a missing object when the caller lacks
 an unconditioned `s3:ListBucket`, and the Terraform pipeline role grants `ListBucket` only under a prefix condition.
-MinIO answered 404, so the passing tests do **not** show that the commit layer works under that policy on real AWS.
-This is a recorded, unverified risk. Encryption (KMS/SSE), the HTTPS-only bucket policy, lifecycle rules and IAM
-itself are not exercised either, and nothing here is load-tested.
+MinIO answers 404 there (even for a caller with no `ListBucket`), so live tests on MinIO can never show it.
+
+The adapter now handles it: on a 403 it lists the prefix equal to that key (allowed under the role) to tell a
+missing object from a forbidden one, and reports an unresolved case as a permission error, never as "missing".
+That is verified against a client double that reproduces AWS's worst case, with its permissions checked against the
+Terraform role, and live on MinIO for the permission-error branches. What stays unproven until a real account is
+used is that AWS really answers 403 here and accepts the probe under the prefix condition.
+
+Encryption (KMS/SSE), the HTTPS-only bucket policy, lifecycle rules and IAM itself are not exercised either, and
+nothing here is load-tested.
 
 ## Troubleshooting
 

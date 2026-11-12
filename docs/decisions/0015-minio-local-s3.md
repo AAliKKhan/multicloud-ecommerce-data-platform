@@ -65,15 +65,24 @@ Running against a real server found two defects that no fake had:
 
 ## What MinIO cannot tell us (so it is not claimed)
 
-- **403 versus 404 on a missing object.** AWS documents that `GetObject`/`HeadObject` on a missing key returns 403,
-  not 404, when the caller lacks an unconditioned `s3:ListBucket`. The Terraform pipeline role grants `ListBucket`
-  only under a `s3:prefix` condition. MinIO returned 404 in the same situation, so the live tests pass but do **not**
-  prove the policy works on real AWS. If AWS answers 403, the commit layer's "is this batch new?" check would fail
-  against it. This needs a run against a real account (the same `test_minio.py` assertions can be pointed at S3);
-  until then it is a recorded risk, not a validated design. Likely fixes: drop the prefix condition from the pipeline
-  `ListBucket` statement, or probe existence with a prefixed list. The Spark sink has the same exposure: its
-  "is this batch new?" read of the manifest and quarantine objects treats only "not found" as new, so a 403 would
-  now fail every new batch with `cannot verify the manifest` (loudly and without writing, but it would not run).
+- **403 versus 404 on a missing object: mitigated in code, still unproven on real AWS.** AWS documents that
+  `GetObject`/`HeadObject` on a missing key returns 403, not 404, when the caller lacks an unconditioned
+  `s3:ListBucket`. The Terraform pipeline role grants `ListBucket` only under a `s3:prefix` condition, which a plain
+  GET or HEAD does not carry. MinIO answers 404 here (the live run showed it does so even for a caller with no
+  `ListBucket` at all), so the live tests alone could never have caught it. The commit layer, the Spark sink and the
+  loader all decide "is this batch new?" from a missing object, so a 403 would have failed every new batch.
+  **The fix (adapter, Terraform unchanged):** when a read or existence check answers 403/`AccessDenied`, the adapter
+  lists the prefix equal to that exact key, which the role may do everywhere it may write. The key is present only
+  if it is the first entry returned; absent means "not found". If the key is present but unreadable, or if the
+  probe is refused too, the result is a *permission error*, never "missing": guessing "missing" could make a batch
+  overwrite committed data. A present key costs no extra request. **Verified** against a client double that
+  reproduces AWS's worst case (403 for every missing key, prefix list allowed), whose permissions a test compares
+  with the Terraform role so the two cannot drift; against the commit path, the Spark sink's conflict check and
+  the loader's reads; and live on MinIO for the two permission-error branches (an existing key the role may not
+  read, with the probe allowed and with it refused). **Not verified:** that real AWS really answers 403 here, and
+  that its prefixed `ListBucket` condition accepts the probe as designed. Both need a real account (the same
+  `test_minio.py` assertions can be pointed at S3). Widening the role's `ListBucket` was rejected: it would loosen
+  least privilege to work around a client-side ambiguity the client can resolve itself.
 - `ListBuckets` is refused by AWS but filtered by MinIO; the test asserts the property that matters (no other bucket
   is visible) rather than the status code.
 - IAM evaluation, KMS/SSE encryption, the `DenyInsecureTransport` bucket policy (local MinIO is plain HTTP) and
@@ -109,5 +118,5 @@ The Spark container is the component that writes the raw zone in the streaming p
   byte-identical, offsets are gapless and the warehouse loaded from MinIO has no double counting (13 checks passing,
   about 18 minutes on this machine). With MinIO stopped the job failed fast and the local GCS copy was untouched.
 - **Not verified:** MinIO failing in the middle of a running micro-batch (not reproducible enough to test; the sink
-  is unit-tested against an unreadable and an unwritable destination), the 403-versus-404 question above, and
+  is unit-tested against an unreadable and an unwritable destination), real AWS's 403 behaviour (see above), and
   anything about performance. The Airflow DAGs and the exporter container are still local-only.
