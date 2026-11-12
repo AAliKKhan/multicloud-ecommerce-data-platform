@@ -1,31 +1,37 @@
-"""Capture the README screenshots from the RUNNING Grafana and Metabase (nothing is mocked).
+"""Capture the README screenshots from the RUNNING services (nothing is mocked).
 
-Needs the monitoring and bi stacks up and their generated secrets (see docs/monitoring.md and
-docs/bi-dashboard.md). Drives a real browser (Edge or Chrome that is already installed) and writes
-PNG files to docs/images/. Playwright is only needed for this script, so it is not a project
-dependency; run it as:
+Each target needs its own stack up (and its generated secrets, see the docs); name the targets you
+want, or give none to capture every one whose service answers:
 
-    uv run --with playwright python scripts/capture_screenshots.py
+    uv run --with playwright python scripts/capture_screenshots.py kafka minio grafana
 
-Logins are read from the git-ignored env files and never printed. Everything shown is synthetic
-demo data from the local stack.
+Targets: kafka, minio, airflow, dbt, grafana, metabase, ci. Drives a real browser (Edge or Chrome
+that is already installed) and writes PNG files to docs/images/. Playwright is only needed for this
+script, so it is not a project dependency. Logins are read from the git-ignored env files and never
+printed. Everything shown is synthetic demo data from the local stack.
 """
 
 from __future__ import annotations
 
 import contextlib
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
+from playwright.sync_api import Browser, Page, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "images"
 GRAFANA = "http://127.0.0.1:3000"
 METABASE = "http://127.0.0.1:3001"
+KAFKA_UI = "http://127.0.0.1:8080"
 GRAFANA_DASHBOARD = "/d/ecomm-pipeline-health"
+WIDE = {"width": 1600, "height": 1000}
+# A page load took 33 s on the 5 GB development machine while Kafka was busy, so be generous.
+LOAD_MS = 180_000
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -39,7 +45,24 @@ def read_env(path: Path) -> dict[str, str]:
     return values
 
 
-def grafana(page: Page, password: str) -> Path:
+def step(message: str) -> None:
+    """Progress line (flushed): a capture that stalls then says where."""
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def new_page(browser: Browser, viewport: dict[str, int] | None = None) -> Page:
+    page = browser.new_context(viewport=viewport or WIDE, device_scale_factor=1).new_page()
+    page.set_default_navigation_timeout(LOAD_MS)
+    page.set_default_timeout(LOAD_MS)
+    return page
+
+
+# --- Grafana and Metabase ------------------------------------------------------------------
+
+
+def grafana(browser: Browser) -> list[Path]:
+    password = read_env(ROOT / "docker" / "monitoring" / ".env")["GF_SECURITY_ADMIN_PASSWORD"]
+    page = new_page(browser)
     page.goto(f"{GRAFANA}/login")
     page.locator("input[name='user']").fill("admin")
     page.locator("input[name='password']").fill(password)
@@ -54,13 +77,15 @@ def grafana(page: Page, password: str) -> Path:
     page.screenshot(
         path=target, full_page=True, clip={"x": 0, "y": 0, "width": 1600, "height": 1260}
     )
-    return target
+    return [target]
 
 
-def metabase(page: Page, email: str, password: str) -> Path:
+def metabase(browser: Browser) -> list[Path]:
+    bi = read_env(ROOT / "docker" / "bi" / ".env")
+    page = new_page(browser, {"width": 1400, "height": 2300})
     page.goto(f"{METABASE}/auth/login")
-    page.get_by_label("Email address").fill(email)
-    page.get_by_label("Password").fill(password)
+    page.get_by_label("Email address").fill(bi["METABASE_ADMIN_EMAIL"])
+    page.get_by_label("Password").fill(bi["METABASE_ADMIN_PASSWORD"])
     page.get_by_role("button", name="Sign in").click()
     page.wait_for_url(lambda url: "/auth/login" not in url, timeout=30_000)
     # Dashboard id 2 is what `ecomm-bi provision` prints on a fresh instance.
@@ -75,43 +100,79 @@ def metabase(page: Page, email: str, password: str) -> Path:
     page.screenshot(
         path=target, full_page=True, clip={"x": 0, "y": 0, "width": 1400, "height": 1920}
     )
-    return target
+    return [target]
 
 
-def main() -> int:
-    OUT.mkdir(parents=True, exist_ok=True)
-    grafana_password = read_env(ROOT / "docker" / "monitoring" / ".env")[
-        "GF_SECURITY_ADMIN_PASSWORD"
-    ]
-    bi = read_env(ROOT / "docker" / "bi" / ".env")
-    with sync_playwright() as p:
-        browser = None
-        for channel in ("msedge", "chrome"):
-            try:
-                browser = p.chromium.launch(channel=channel)
-                break
-            except PlaywrightError as exc:  # this browser is not installed: try the next one
-                print(f"{channel}: not usable ({str(exc).splitlines()[0]})")
-        if browser is None:
-            sys.exit("no Edge or Chrome found; install one or run `playwright install chromium`")
+# --- Kafka UI ------------------------------------------------------------------------------
+
+
+def kafka(browser: Browser) -> list[Path]:
+    page = new_page(browser)
+    step("kafka: opening the topics page")
+    page.goto(f"{KAFKA_UI}/ui/clusters/local/all-topics?perPage=25", wait_until="domcontentloaded")
+    page.wait_for_selector("table tbody tr")
+    step("kafka: topics table is there")
+    with contextlib.suppress(PlaywrightTimeout):  # hide Kafka's internal topics: they are noise
+        page.get_by_text("Show Internal Topics").click(timeout=5_000)
+    page.wait_for_timeout(2_500)
+    topics = OUT / "kafka-ui-topics.png"
+    page.screenshot(path=topics, clip={"x": 0, "y": 0, "width": 1600, "height": 620})
+
+    step("kafka: opening the messages page")
+    page.goto(
+        f"{KAFKA_UI}/ui/clusters/local/all-topics/commerce.orders/messages",
+        wait_until="domcontentloaded",
+    )
+    # A loading placeholder also matches "table tbody tr", so wait for what only a real message has:
+    # the event envelope in the value preview. If it never shows, fail: never capture a spinner.
+    try:
+        page.get_by_text('"event_id"').first.wait_for(state="visible")
+    except PlaywrightTimeout:
+        sys.exit("kafka: the messages never appeared (is the broker healthy?); not capturing")
+    step("kafka: messages are there")
+    page.wait_for_timeout(3_000)  # let the list finish streaming
+    with contextlib.suppress(PlaywrightTimeout):  # expand one message to show its JSON envelope
+        page.locator("table tbody tr").first.locator("td").first.click(timeout=5_000)
+    page.wait_for_timeout(1_500)
+    messages = OUT / "kafka-ui-messages.png"
+    page.screenshot(path=messages, clip={"x": 0, "y": 0, "width": 1600, "height": 980})
+    return [topics, messages]
+
+
+TARGETS: dict[str, Callable[[Browser], list[Path]]] = {
+    "kafka": kafka,
+    "grafana": grafana,
+    "metabase": metabase,
+}
+
+
+def launch(p: object) -> Browser:
+    for channel in ("msedge", "chrome"):
         try:
-            wide = browser.new_context(
-                viewport={"width": 1600, "height": 1000}, device_scale_factor=1
-            )
-            print("wrote", grafana(wide.new_page(), grafana_password))
-            tall = browser.new_context(
-                viewport={"width": 1400, "height": 2300}, device_scale_factor=1
-            )
-            print(
-                "wrote",
-                metabase(
-                    tall.new_page(), bi["METABASE_ADMIN_EMAIL"], bi["METABASE_ADMIN_PASSWORD"]
-                ),
-            )
+            return p.chromium.launch(channel=channel)  # type: ignore[attr-defined, no-any-return]
+        except PlaywrightError as exc:  # this browser is not installed: try the next one
+            print(f"{channel}: not usable ({str(exc).splitlines()[0]})")
+    sys.exit("no Edge or Chrome found; install one or run `playwright install chromium`")
+
+
+def main(argv: list[str]) -> int:
+    unknown = [name for name in argv if name not in TARGETS]
+    if unknown:
+        sys.exit(f"unknown target(s) {unknown}; choose from {sorted(TARGETS)}")
+    names = argv or list(TARGETS)
+    OUT.mkdir(parents=True, exist_ok=True)
+    step("starting the browser")
+    with sync_playwright() as p:
+        browser = launch(p)
+        step("browser started")
+        try:
+            for name in names:
+                for path in TARGETS[name](browser):
+                    print(f"{name}: wrote {path}")
         finally:
             browser.close()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
