@@ -81,15 +81,34 @@ class LocalObjectStore:
         return loaded
 
     def list_objects(self, prefix: str = "") -> list[str]:
+        """Keys under ``prefix``, sorted. Only the part of the tree the prefix can match is read.
+
+        The directory part of the prefix (everything up to its last ``/``) is where the walk starts,
+        so ``raw/`` never opens ``manifests/``. This used to walk and ``stat`` every file under the
+        root and filter afterwards; on a Windows bind mount that took 10 to 56 seconds per call.
+        ``os.walk`` classifies entries from the directory listing itself, with no per-file ``stat``.
+        """
+        directory, _, _ = prefix.rpartition("/")
+        parts = directory.split("/") if directory else []
+        # No valid key has an empty, "." or ".." segment or a backslash, so such a prefix matches
+        # nothing (and must never be used to walk outside the root).
+        if (
+            "\\" in prefix
+            or any(part in ("", ".", "..") for part in parts)
+            or prefix.startswith("/")
+        ):
+            return []
+        start = self.root.joinpath(*parts)
+        if not start.is_dir():
+            return []
         keys = []
-        for path in self.root.rglob("*"):
-            if not path.is_file() or path.name.endswith(_META_SUFFIX):
-                continue
-            if path.name.startswith(".tmp-"):
-                continue
-            key = path.relative_to(self.root).as_posix()
-            if key.startswith(prefix):
-                keys.append(key)
+        for current, _dirs, files in os.walk(start):
+            for name in files:
+                if name.endswith(_META_SUFFIX) or name.startswith(".tmp-"):
+                    continue
+                key = (Path(current) / name).relative_to(self.root).as_posix()
+                if key.startswith(prefix):
+                    keys.append(key)
         return sorted(keys)
 
     def object_exists(self, key: str) -> bool:
