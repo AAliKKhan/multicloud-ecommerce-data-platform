@@ -15,7 +15,10 @@ What this proves that the moto-based unit tests cannot:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -159,6 +162,88 @@ def test_a_missing_object_is_not_found_not_an_error(env: dict[str, str], prefix:
     assert store.object_exists(f"{prefix}nope/missing") is False
     with pytest.raises(ObjectNotFoundError):
         store.read_object(f"{prefix}nope/missing")
+
+
+def minio_exec(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run `mc` inside the MinIO container as root (admin tasks: there is no S3 API for IAM)."""
+    script = (
+        'mc --config-dir /tmp/mc alias set l http://localhost:9000 "$MINIO_ROOT_USER" '
+        '"$MINIO_ROOT_PASSWORD" >/dev/null && mc --config-dir /tmp/mc ' + " ".join(args)
+    )
+    return subprocess.run(  # noqa: S603 - fixed argv, no shell on the host
+        [shutil.which("docker") or "docker", "exec", "-i", "ecomm-minio", "sh", "-c", script],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+@contextlib.contextmanager
+def limited_user(
+    env: dict[str, str], actions: list[str], *, list_prefix: bool
+) -> Iterator[S3ObjectStore]:
+    """A throw-away user that may put/get only what ``actions`` allow under raw/, created and removed
+    through the admin client inside the MinIO container. ``list_prefix`` also grants a prefix list."""
+    name, policy = f"probe{uuid.uuid4().hex[:8]}", f"probe-{uuid.uuid4().hex[:8]}"
+    secret = uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    bucket = env["ECOMM_S3_BUCKET"]
+    statements: list[dict[str, Any]] = [
+        {"Effect": "Allow", "Action": actions, "Resource": [f"arn:aws:s3:::{bucket}/raw/*"]}
+    ]
+    if list_prefix:
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": ["s3:ListBucket"],
+                "Resource": [f"arn:aws:s3:::{bucket}"],
+                "Condition": {"StringLike": {"s3:prefix": ["raw/", "raw/*"]}},
+            }
+        )
+    document = json.dumps({"Version": "2012-10-17", "Statement": statements})
+    made = minio_exec("admin policy create l " + policy + " /dev/stdin", stdin=document)
+    assert made.returncode == 0, made.stderr
+    try:
+        assert minio_exec(f"admin user add l {name} {secret}").returncode == 0
+        attached = minio_exec(f"admin policy attach l {policy} --user {name}")
+        assert attached.returncode == 0, attached.stderr
+        yield pipeline_store(env, access_key=name, secret_key=secret)
+    finally:
+        minio_exec(f"admin user remove l {name}")
+        minio_exec(f"admin policy remove l {policy}")
+
+
+def test_a_key_that_exists_but_may_not_be_read_is_a_permission_error_never_missing(
+    env: dict[str, str], prefix: str
+) -> None:
+    """A real 403 from a real server, for an object that EXISTS but the caller may not read.
+
+    The adapter must not report it as missing: that would make a batch look new and overwrite
+    committed data. Two outcomes of its probe are checked, both live: the probe is allowed and finds
+    the key (the role may list but not read), and the probe is refused too (it cannot tell).
+
+    What MinIO cannot reproduce is AWS's 403 for a MISSING key (this MinIO answers 404 even for a
+    caller with no ListBucket); that branch is covered by the AWS-semantics double in the unit tests.
+    """
+    key = f"{prefix}guarded/manifest.json"
+    pipeline_store(env).write_object(key, b"committed")  # put by the real pipeline user
+
+    with limited_user(env, ["s3:PutObject"], list_prefix=True) as can_list_not_read:
+        with pytest.raises(StorageError, match="exists but this role may not read") as raised:
+            can_list_not_read.read_object(key)
+        assert not isinstance(raised.value, ObjectNotFoundError)
+        with pytest.raises(StorageError, match="exists but this role may not check"):
+            can_list_not_read.object_exists(key)
+
+    with limited_user(env, ["s3:PutObject"], list_prefix=False) as cannot_list:
+        with pytest.raises(StorageError, match="prefix probe was refused") as raised:
+            cannot_list.read_object(key)
+        assert not isinstance(raised.value, ObjectNotFoundError)
+        with pytest.raises(StorageError, match="permission denied"):
+            cannot_list.object_exists(key)
+
+    assert pipeline_store(env).read_object(key) == b"committed"  # nothing was changed by any of it
 
 
 @pytest.mark.parametrize("key", ["", "/abs", "a/../b", "a//b", "a\\b", "./x"])
