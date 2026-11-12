@@ -256,6 +256,51 @@ jobs:
         if: failure()
         run: tail -n 150 airflow-dags-test.log || true
 
+  containers-minio:
+    name: Airflow and the exporter on MinIO (real containers, real bucket)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked, with extras)
+        run: uv sync --locked --all-extras
+
+      - name: Validate the compose file with the profiles involved
+        run: docker compose --profile airflow --profile monitoring --profile minio config --quiet
+
+      # Three images, built once for both tests: MinIO (compiled from the pinned, patched source
+      # tag, see docs/decisions/0015), the metrics exporter, and Airflow with its project venv.
+      - name: Build the MinIO, exporter and Airflow images
+        run: |
+          docker compose --profile minio build minio
+          docker compose --profile monitoring build ecomm-exporter
+          docker compose --profile airflow build airflow-init
+
+      - name: Create the secrets, start MinIO and run the init job
+        run: |
+          python docker/minio/generate_env.py
+          docker compose --profile minio up -d --wait minio
+          docker compose --profile minio run --rm minio-init
+
+      # The four DAGs run by real Airflow against a raw zone that lives in the bucket (and only
+      # read it); an unreachable bucket fails the readiness check instead of skipping the run.
+      # The exporter reads the bucket, stays up while MinIO is stopped, and recovers by itself.
+      - name: Airflow and exporter integration tests on MinIO
+        run: uv run pytest tests/integration/test_airflow_minio.py tests/integration/test_exporter_minio.py -v
+
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose --profile minio logs --tail 80 minio
+
+      - name: Stop and remove containers and volumes
+        if: always()
+        run: docker compose --profile minio down -v
+
   monitoring:
     name: Prometheus and Grafana (real services in Docker)
     runs-on: ubuntu-latest
