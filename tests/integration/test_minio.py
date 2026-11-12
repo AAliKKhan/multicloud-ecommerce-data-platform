@@ -33,6 +33,7 @@ import duckdb
 import pytest
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from minio_support import purge_marker
 
 from ecomm.demo import SOURCE, run_batch_demo
 from ecomm.generator import GeneratorConfig, generate
@@ -367,7 +368,9 @@ BATCHES = 2
 
 
 @pytest.fixture(scope="module")
-def runs(env: dict[str, str], tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+def runs(
+    env: dict[str, str], root_client: Any, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[dict[str, Any]]:
     store = pipeline_store(env)
     foreign = [k for k in store.list_objects("manifests/") if f"source={SOURCE}/" in k]
     own = {f"batch_id=demo-4242-b{i:05d}/" for i in range(BATCHES)}
@@ -377,9 +380,15 @@ def runs(env: dict[str, str], tmp_path_factory: pytest.TempPathFactory) -> dict[
             "(docker compose --profile minio down -v, then up again)"
         )
     base = tmp_path_factory.mktemp("minio-e2e")
-    local = run_batch_demo(demo_config(), base / "local", BATCHES, env={})
-    remote = run_batch_demo(demo_config(), base / "minio", BATCHES, env=env)
-    return {"local": local, "minio": remote, "base": base, "env": env}
+    try:
+        local = run_batch_demo(demo_config(), base / "local", BATCHES, env={})
+        remote = run_batch_demo(demo_config(), base / "minio", BATCHES, env=env)
+        yield {"local": local, "minio": remote, "base": base, "env": env}
+    finally:
+        # Leave the shared bucket as it was found: the next test that needs a clean one (and the
+        # Airflow and exporter tests, which also write 'commerce' batches) must not skip because
+        # of this run. Only this test's own batches are removed, matched by name.
+        purge_marker(root_client, env["ECOMM_S3_BUCKET"], "demo-4242")
 
 
 def test_every_batch_commits_to_minio_and_the_clouds_agree(runs: dict[str, Any]) -> None:
