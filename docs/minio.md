@@ -43,8 +43,10 @@ Settings come from `docker/minio/.env` and the process environment (which wins):
 `ECOMM_S3_ENDPOINT_URL`, `ECOMM_S3_BUCKET`, `ECOMM_S3_ACCESS_KEY`, `ECOMM_S3_SECRET_KEY`.
 
 The **Spark streaming job** follows the same setting, in its container (as the pipeline user, over the compose
-network): [spark.md](spark.md#landing-the-s3-side-in-minio). **Not yet wired to MinIO** (they run in containers and
-still use local directories): the Airflow DAGs and the metrics exporter container.
+network): [spark.md](spark.md#landing-the-s3-side-in-minio). So do the **Airflow DAGs**
+([airflow.md](airflow.md#against-a-minio-raw-zone)) and the **metrics exporter**
+([monitoring.md](monitoring.md#against-a-minio-raw-zone)): every container that touches the raw zone now follows
+the one setting. Each gets only the pipeline user's key, never the root credentials.
 
 ## What is verified
 

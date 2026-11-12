@@ -119,4 +119,40 @@ The Spark container is the component that writes the raw zone in the streaming p
   about 18 minutes on this machine). With MinIO stopped the job failed fast and the local GCS copy was untouched.
 - **Not verified:** MinIO failing in the middle of a running micro-batch (not reproducible enough to test; the sink
   is unit-tested against an unreadable and an unwritable destination), real AWS's 403 behaviour (see above), and
-  anything about performance. The Airflow DAGs and the exporter container are still local-only.
+  anything about throughput.
+
+## Addendum 2: the Airflow DAGs and the exporter container read the bucket too (2026-11-12)
+
+The last two containers that touch the raw zone now follow `ECOMM_S3_BACKEND` as well, so no component is
+left on a local-only path. Each gets the pipeline user's key and `http://minio:9000`, never the root credentials;
+`boto3`/`botocore` are added at the locked versions (the Airflow one in its isolated project virtualenv, not
+Airflow's own constrained environment). A static test checks the env files, endpoints, absence of `depends_on`
+(independent profiles) and the pinned versions for all four services that need them.
+
+- **Readiness check.** The DAG's `check_lake_ready` was a shell `find` on a local folder. It is now
+  `ecomm.lake.ready_cli` (0 = batches present, 99 = nothing yet so skip, 1 = missing, misconfigured or
+  unreachable). The design choice worth recording: an unreachable lake exits 1 and **never 99**, because a skipped
+  run looks healthy and would hide an outage. Tested for each outcome, for the contract with the DAG's skip code,
+  for a typo in `--demo-dir` (nothing is created), and live inside the Airflow container with the bucket
+  unreachable.
+- **Verification.** Airflow: 7 live checks. All four DAGs succeed against a bucket-backed raw zone, the readiness
+  check read the bucket, the warehouse holds each committed event once, the reconciliation compared MinIO with the
+  GCS copy, and every bucket object is byte-identical afterwards (the DAGs only read). Exporter: 5 live checks.
+  Numbers read from the bucket equal what was committed, parity agrees, the exporter never writes, and with MinIO
+  stopped it keeps serving and names the failing sections (`lake`, `parity`) and then recovers by itself.
+- **A finding that was not about MinIO.** The first exporter run took 167 s per refresh and the cadence check
+  failed. Profiling inside the image, step by step, showed MinIO answering in 0.02 to 1.5 s while the *local*
+  store took 10 to 56 s per listing, because `LocalObjectStore.list_objects` walked and `stat`-ed every file under
+  its root and only then filtered by prefix; one refresh does several such listings. It now walks only the
+  subtree the prefix can match (`os.walk`, no per-file `stat`). Measured on the same data and filesystem: one
+  refresh 188 to 237 s down to about 15 s on a local lake of 1,772 files, and 31 to 36 s down to 5 to 14 s with the S3
+  side in MinIO. The cadence assertion was kept at 30 s, not loosened. Behaviour is pinned by 24 equivalence tests
+  (every kind of prefix against a brute-force reference, hostile prefixes) written before the change and passing
+  on the old code, plus two that prove other branches are never opened and failed on the old code.
+- **Test hygiene found on the way.** The earlier MinIO test never removed its own batches, so a later test that
+  needs a clean bucket skipped instead of running; and a Docker crash during the Spark test left objects behind.
+  The fixture now cleans up after itself, and the new tests refuse to run (skip, with the reason) rather than
+  delete data they did not create.
+- **Not verified:** the exporter against a bucket holding many thousands of batches (every refresh reads every
+  manifest over HTTP, so it is O(batches); fine at demo scale, not measured beyond it), a MinIO outage in the middle
+  of a DAG task (the readiness check is tested unreachable, the DAG tasks themselves are not), and real AWS.

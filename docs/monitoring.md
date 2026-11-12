@@ -70,12 +70,37 @@ need credentials); alerts are visible in Prometheus (`/alerts`) and in the dashb
   machine that took over two minutes (1,846 small files on a Windows bind mount), which made every scrape time out
   and the container unhealthy. The exporter now refreshes in a background thread and serves the last snapshot
   from memory (a scrape takes about 10 ms), reporting its age so staleness is visible and alertable.
+- **The slow part was a local directory walk, not the network.** Profiling one refresh inside the exporter image,
+  with each step timed separately, found `LocalObjectStore.list_objects` walking and `stat`-ing every file under
+  the store root before filtering by prefix: 10 to 56 seconds per call on the Windows bind mount, while reading a
+  single file took 0.03 s and a MinIO listing 0.02 to 1.5 s. It now walks only the subtree the prefix can match
+  (`os.walk`, no per-file `stat`): listing `manifests/` went from 14 to 28 s to under 0.4 s, and one whole refresh
+  from 188 to 237 s to about 15 s on a local lake of 1,772 files, and from 31 to 36 s to 5 to 14 s with the S3 side
+  in MinIO. Listing `raw/` still takes 7 to 10 s here because it genuinely holds hundreds of small files on a slow
+  filesystem; on Linux it is milliseconds. A unit test proves the subtree property without timing.
 - **Light parity while serving.** The live exporter compares manifests and object presence (cheap). Byte-level
   re-hashing of every object stays in the daily reconciliation DAG and in the one-shot export, where a full pass
   is acceptable. The light check cannot see an object altered in place; the daily job can.
 - **A locked or missing warehouse is a state, not an outage.** If a writer holds DuckDB's lock, the exporter
   answers `ecomm_exporter_ready 0` with the reason instead of failing the scrape; the previous snapshot is
   served until the next successful refresh.
+
+## Against a MinIO raw zone
+
+With `ECOMM_S3_BACKEND=minio` the exporter container reads the S3 side of the raw zone from the bucket as the
+least-privilege pipeline user (it only ever reads; the root credentials never reach it). Verified live
+(`tests/integration/test_exporter_minio.py`, 5 checks, also in CI as job `containers-minio`):
+
+- `ecomm_events_committed` is summed from the manifests read over S3 and equals what the pipeline committed; the
+  cross-cloud parity check compares the bucket with the GCS copy and reports no mismatch; no scrape-error section
+  is set; the bucket is byte-identical afterwards.
+- A refresh against the bucket took 6 s for 2 batches here (measured by the exporter itself and asserted below 30 s).
+- **MinIO outage.** With MinIO stopped the exporter keeps answering scrapes, serves its last snapshot and sets
+  `ecomm_scrape_errors{section="lake"}` and `{section="parity"}`; when MinIO is back it recovers on its own with no
+  restart. An alert on a growing `ecomm_exporter_snapshot_age_seconds` or on those error sections is how an outage
+  would be noticed; no new alert rule was added for it.
+- Each refresh builds a new S3 client (about 4 to 6 s on this starved machine, cold). Reusing one would shave that
+  off but was not changed: it is well inside the 60-second cadence.
 
 ## When something is wrong
 

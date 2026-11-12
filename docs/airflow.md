@@ -49,6 +49,29 @@ docker exec ecomm-airflow-scheduler airflow dags trigger historical_backfill \
 
 Unpausing a daily DAG starts its most recent scheduled run immediately; that is normal.
 
+## Against a MinIO raw zone
+
+The S3 side of the raw zone can be a MinIO bucket instead of a local folder ([minio.md](minio.md)). The Airflow
+containers follow the same `ECOMM_S3_BACKEND` setting as every other tool:
+
+```powershell
+docker compose --profile minio up -d --build          # then once: docker compose --profile minio run --rm minio-init
+$env:ECOMM_S3_BACKEND = "minio"
+docker compose --profile airflow up -d --build airflow-webserver airflow-scheduler
+```
+
+They receive the **pipeline user's** key (a least-privilege user that cannot delete) and the in-network address
+`http://minio:9000`, never the MinIO root credentials; the GCS copy, the control store and the warehouse stay on the
+mounted data directory. The image's project virtualenv has the S3 client at the version in `uv.lock`.
+
+- **`check_lake_ready`** used to be a shell `find` on a local folder, which cannot see a bucket. It is now
+  `python -m ecomm.lake.ready_cli`, which asks the same lake factory as every other tool. Exit `0`: committed
+  batches exist (a `manifest.json` is the commit marker). Exit `99`: nothing committed yet, so the DAG skips. Exit
+  `1`: the lake is missing, misconfigured or **unreachable**. An outage is deliberately a failure and never a skip:
+  a skipped run looks healthy, so an unreachable bucket reported as "nothing to load" would go unnoticed.
+- The DAGs only read the raw zone (loads, dbt, quality, reconciliation); the test checks every object in the
+  bucket is byte-identical afterwards.
+
 ## Design points
 
 - **Idempotent tasks.** Loads `MERGE` on `event_id`, so a retry or a manual re-trigger inserts nothing
@@ -107,6 +130,13 @@ is lost. If Spark is down, Airflow simply finds nothing new and skips.
   non-root user and must print `ALL_DAGS_OK`; then the project's own quality suite and the reconciliation
   run on the warehouse the DAGs built. (An earlier version of that step passed while running nothing; it now
   keeps the exit code through the pipe and requires the explicit marker, with a test guarding both.)
-- Not verified: BigQuery as the warehouse, real S3/GCS, multi-worker executors, and email/Slack alerting.
+- Verified against MinIO (`tests/integration/test_airflow_minio.py`, 7 checks, also in CI as job
+  `containers-minio`): real Airflow runs all four DAGs, as the pipeline user on the compose network, against a
+  raw zone that lives in the bucket. The readiness check read the bucket; the warehouse the DAGs built holds exactly
+  the committed events, each once; the reconciliation compared MinIO with the GCS copy and found them identical;
+  the bucket is unchanged afterwards. With the bucket unreachable the readiness check exits `1` (never `99`) and
+  does not leak the secret. About 25 minutes on a 5 GB laptop (dbt included).
+- Not verified: BigQuery as the warehouse, real AWS S3 and GCS (MinIO is the S3 stand-in; GCS is a local
+  directory), multi-worker executors, and email/Slack alerting.
 - Memory: Airflow plus Kafka plus Spark together do not fit in 5 GB; run Airflow with Kafka stopped (it does
   not need Kafka).

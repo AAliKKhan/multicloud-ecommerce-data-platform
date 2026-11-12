@@ -143,4 +143,5 @@ alongside Spark. A starved broker can stop heartbeating its controller and needs
 - Executor-side parallel writes: the driver commits each micro-batch (see ADR 0011).
 - Spark driver metrics in Prometheus (the exporter publishes Spark's per-batch progress and lag, see
   [monitoring.md](monitoring.md), but the one-shot container has no scrape target of its own).
-- The Airflow DAGs and the metrics-exporter container still read local directories, not MinIO.
+- (The Airflow DAGs and the metrics exporter now read the MinIO bucket too; see [airflow.md](airflow.md) and
+  [monitoring.md](monitoring.md).)
