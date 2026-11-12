@@ -22,6 +22,9 @@ from ecomm.storage.interface import (
 )
 
 _NOT_FOUND_CODES = {"NoSuchKey", "404", "NotFound"}
+# What S3 answers for a missing key when the caller has no unconditioned s3:ListBucket (AWS), and
+# also for a key that exists but may not be read. The adapter must tell the two apart.
+_DENIED_CODES = {"AccessDenied", "403", "Forbidden"}
 
 CONNECT_TIMEOUT_S = 5
 READ_TIMEOUT_S = 30
@@ -82,9 +85,41 @@ class S3ObjectStore:
             )
         self._client = client
 
+    def _code(self, exc: Exception) -> str:
+        return str(getattr(exc, "response", {}).get("Error", {}).get("Code"))
+
     def _is_not_found(self, exc: Exception) -> bool:
-        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
-        return str(code) in _NOT_FOUND_CODES
+        return self._code(exc) in _NOT_FOUND_CODES
+
+    def _is_denied(self, exc: Exception) -> bool:
+        return self._code(exc) in _DENIED_CODES
+
+    def _absent_when_denied(self, key: str, operation: str) -> bool:
+        """Is a key that answered 403 really absent? True: absent. False: it exists.
+
+        AWS answers 403 instead of 404 for a missing key unless the caller has an unconditioned
+        ``s3:ListBucket``. The Terraform pipeline role grants ListBucket only under an
+        ``s3:prefix`` condition, which a plain GET or HEAD does not carry. A prefix list of exactly
+        this key does carry it, and is allowed anywhere the role may write, so it settles the
+        question without widening the role. If even the list is refused we cannot tell, and that
+        is reported as a permission error, never guessed as "missing" (a wrong guess would let a
+        batch overwrite committed data).
+        """
+        try:
+            found = self._client.list_objects_v2(Bucket=self.bucket, Prefix=key, MaxKeys=1)
+        except Exception as exc:
+            raise StorageError(
+                f"S3 permission denied for {key} ({operation}) and the prefix probe was refused "
+                f"too ({type(exc).__name__}): cannot tell a missing object from a forbidden one"
+            ) from exc
+        # A key sorts before every longer key sharing its prefix, so if it exists it is first.
+        return not any(item.get("Key") == key for item in found.get("Contents", []))
+
+    def _denied(self, key: str, operation: str, exc: Exception) -> StorageError:
+        return StorageError(
+            f"S3 permission denied for {key} ({operation}): the object exists but this role "
+            f"may not {operation} it ({type(exc).__name__})"
+        )
 
     def write_object(
         self, key: str, data: bytes, metadata: Mapping[str, str] | None = None
@@ -109,6 +144,10 @@ class S3ObjectStore:
         except Exception as exc:
             if self._is_not_found(exc):
                 raise ObjectNotFoundError(key) from exc
+            if self._is_denied(exc):
+                if self._absent_when_denied(key, "read"):
+                    raise ObjectNotFoundError(key) from exc
+                raise self._denied(key, "read", exc) from exc
             raise StorageError(f"S3 read failed for {key}: {type(exc).__name__}") from exc
 
     def list_objects(self, prefix: str = "") -> list[str]:
@@ -128,5 +167,9 @@ class S3ObjectStore:
         except Exception as exc:
             if self._is_not_found(exc):
                 return False
+            if self._is_denied(exc):
+                if self._absent_when_denied(key, "check"):
+                    return False
+                raise self._denied(key, "check", exc) from exc
             raise StorageError(f"S3 head failed for {key}: {type(exc).__name__}") from exc
         return True
