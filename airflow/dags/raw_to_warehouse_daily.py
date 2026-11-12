@@ -6,8 +6,9 @@ never read.
 
 Tasks
 -----
-1. ``check_lake_ready``: fails if the lake directory is missing; **skips** the run (and everything
-   after it) when there is simply nothing committed yet.
+1. ``check_lake_ready``: fails if the raw zone is missing or unreachable (a local directory, or a
+   MinIO/S3 bucket when ``ECOMM_S3_BACKEND=minio``); **skips** the run (and everything after it)
+   when there is simply nothing committed yet. An outage is a failure, never a skip.
 2. ``load_new_batches``: ``ecomm-load --only-new``. Batches whose latest load succeeded are skipped;
    the rest are verified (SHA-256, row counts) and ``MERGE``d on ``event_id``. Re-running is safe:
    replays insert nothing, so revenue can never be double counted.
@@ -25,8 +26,6 @@ import pendulum
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from ecomm_common import (
-    BASH_STRICT,
-    DATA_DIR,
     DEFAULT_ARGS,
     RAW_EVENTS_DATASET,
     RUN_ENV,
@@ -36,21 +35,10 @@ from ecomm_common import (
     notify_failure,
 )
 
-CHECK_LAKE = (
-    BASH_STRICT
-    + f"""LAKE="{DATA_DIR}/lake/s3-local"
-if [ ! -d "$LAKE" ]; then
-  echo "raw lake not found at $LAKE: run the Spark job first (docs/spark.md)" >&2
-  exit 1
-fi
-FIRST="$(find "$LAKE/manifests" -name manifest.json -print -quit 2>/dev/null || true)"
-if [ -z "$FIRST" ]; then
-  echo "no committed batches yet: nothing to load"
-  exit {SKIP_EXIT_CODE}
-fi
-echo "committed batches present (for example: $FIRST)"
-"""
-)
+# Exit 0: batches present. Exit 99 (SKIP_EXIT_CODE): nothing committed yet. Anything else: fail.
+# The check goes through the same lake factory as every other tool, so it works for a local
+# directory and for a MinIO bucket alike (ecomm.lake.ready_cli).
+CHECK_LAKE = cli("lake_ready")
 
 with DAG(
     dag_id="raw_to_warehouse_daily",

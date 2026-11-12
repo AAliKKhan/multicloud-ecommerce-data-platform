@@ -47,6 +47,7 @@ SKIP_EXIT_CODE = 99
 
 #: CLI name -> Python module (the project is on ``PYTHONPATH``, not pip-installed).
 MODULES = {
+    "lake_ready": "ecomm.lake.ready_cli",
     "load": "ecomm.warehouse.cli",
     "reconcile": "ecomm.lake.reconcile_cli",
     "dbt": "ecomm.orchestration.dbt_runner",
@@ -85,8 +86,9 @@ def cli(tool: str, *args: str) -> str:
 #: What an operator should do first, per task. Shown in the failure log line.
 FAILURE_HINTS = {
     "check_lake_ready": (
-        "The raw lake directory is missing. Run the Spark job (docs/spark.md) so batches are "
-        "committed, or point ECOMM_DATA_DIR at the right directory."
+        "The raw zone is missing or unreachable. Read the task log: a missing folder means run the "
+        "Spark job (docs/spark.md) or point ECOMM_DATA_DIR at the right directory; an unreachable "
+        "MinIO/S3 bucket means check the service and the pipeline credentials (docs/minio.md)."
     ),
     "load_new_batches": (
         "Raw files are untouched. Read raw.load_audit for the failing batch, fix the cause and "
