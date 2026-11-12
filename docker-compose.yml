@@ -27,7 +27,15 @@ x-airflow-common: &airflow-common
   env_file:
     - path: docker/airflow/.env
       required: false # a missing file is reported by require-secrets.sh with instructions
+    # The MinIO pipeline user's key and the bucket (NOT .env.root). Optional, and unused unless
+    # ECOMM_S3_BACKEND=minio, so a plain local run needs no MinIO secrets.
+    - path: docker/minio/.env
+      required: false
   environment:
+    ECOMM_S3_BACKEND: ${ECOMM_S3_BACKEND:-local}
+    # Inside the compose network MinIO is a host name, not the loopback address the host uses
+    # (this overrides the endpoint in the env file).
+    ECOMM_S3_ENDPOINT_URL: http://minio:9000
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true" # nothing runs until you unpause it
@@ -245,6 +253,14 @@ services:
       dockerfile: docker/exporter/Dockerfile
     container_name: ecomm-exporter
     restart: unless-stopped
+    env_file:
+      # The MinIO pipeline user's key (NOT .env.root); optional and unused unless
+      # ECOMM_S3_BACKEND=minio. The exporter only ever reads.
+      - path: docker/minio/.env
+        required: false
+    environment:
+      ECOMM_S3_BACKEND: ${ECOMM_S3_BACKEND:-local}
+      ECOMM_S3_ENDPOINT_URL: http://minio:9000 # a host name inside the compose network
     volumes:
       - ./src:/app/src:ro
       - ${PIPELINE_DATA_DIR:-./data/spark}:/data/pipeline:ro

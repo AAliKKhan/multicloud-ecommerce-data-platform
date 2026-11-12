@@ -14,6 +14,8 @@ ARG DBT_DUCKDB_VERSION=1.11.1
 ARG PROMETHEUS_CLIENT_VERSION=0.26.0
 ARG PYDANTIC_VERSION=2.14.3
 ARG PYDANTIC_SETTINGS_VERSION=2.16.2
+ARG BOTO3_VERSION=1.43.127
+ARG BOTOCORE_VERSION=1.43.127
 
 USER airflow
 
@@ -27,6 +29,12 @@ RUN python -m venv /home/airflow/ecomm-venv \
         "pydantic==${PYDANTIC_VERSION}" \
         "pydantic-settings==${PYDANTIC_SETTINGS_VERSION}" \
     && /home/airflow/ecomm-venv/bin/python -c "import duckdb, dbt.version, pydantic; print('venv ok', duckdb.__version__)"
+
+# S3 client for the S3-compatible raw zone (MinIO, docs/minio.md), at the locked versions. A separate
+# layer after the venv one, so the large dbt/DuckDB layer above keeps its build cache.
+RUN /home/airflow/ecomm-venv/bin/pip install --no-cache-dir --default-timeout=180 --retries 10 \
+        "boto3==${BOTO3_VERSION}" "botocore==${BOTOCORE_VERSION}" \
+    && /home/airflow/ecomm-venv/bin/python -c "import boto3; print('s3 client ok', boto3.__version__)"
 
 # World-readable so the container also works under an arbitrary UID (AIRFLOW_UID, as on CI).
 RUN chmod -R a+rX /home/airflow/ecomm-venv

@@ -10,6 +10,8 @@ ARG DUCKDB_VERSION=1.5.6
 ARG PROMETHEUS_CLIENT_VERSION=0.26.0
 ARG PYDANTIC_VERSION=2.14.3
 ARG PYDANTIC_SETTINGS_VERSION=2.16.2
+ARG BOTO3_VERSION=1.43.127
+ARG BOTOCORE_VERSION=1.43.127
 
 # Long timeouts and retries: wheels over a slow connection otherwise abort the build.
 RUN pip install --no-cache-dir --default-timeout=180 --retries 10 \
@@ -18,6 +20,11 @@ RUN pip install --no-cache-dir --default-timeout=180 --retries 10 \
         "pydantic==${PYDANTIC_VERSION}" \
         "pydantic-settings==${PYDANTIC_SETTINGS_VERSION}" \
     && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin exporter
+
+# S3 client, so the exporter can read an S3-compatible raw zone (MinIO, docs/minio.md) at the locked
+# versions. Its own layer, so the layer above keeps its build cache.
+RUN pip install --no-cache-dir --default-timeout=180 --retries 10 \
+        "boto3==${BOTO3_VERSION}" "botocore==${BOTOCORE_VERSION}"
 
 ENV PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \

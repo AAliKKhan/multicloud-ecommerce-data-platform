@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from ecomm.storage.s3 import S3ObjectStore  # noqa: F401 - the adapter MinIO exercises
@@ -163,6 +164,47 @@ def test_the_spark_image_has_the_s3_client_at_the_locked_versions() -> None:
     # Last layer: the large PySpark and connector layers above it keep their build cache.
     assert text.index("BOTO3_VERSION") > text.index("spark-sql-kafka-0-10")
     assert text.index("BOTO3_VERSION") < text.index("ENV PYTHONPATH=/app/src")
+
+
+def _env_file_paths(service: str) -> list[str]:
+    return [e["path"] if isinstance(e, dict) else e for e in SERVICES[service]["env_file"]]
+
+
+@pytest.mark.parametrize(
+    "service", ["airflow-scheduler", "airflow-webserver", "airflow-init", "ecomm-exporter"]
+)
+def test_airflow_and_the_exporter_get_the_pipeline_key_and_the_in_network_endpoint_never_root(
+    service: str,
+) -> None:
+    paths = _env_file_paths(service)
+    assert "docker/minio/.env" in paths and not any("minio/.env.root" in p for p in paths)
+    minio_entry = next(e for e in SERVICES[service]["env_file"] if e["path"] == "docker/minio/.env")
+    assert minio_entry["required"] is False  # a plain local run needs no MinIO secrets
+    env = SERVICES[service]["environment"]
+    assert env["ECOMM_S3_ENDPOINT_URL"] == "http://minio:9000"  # a host name inside the network
+    assert env["ECOMM_S3_BACKEND"] == "${ECOMM_S3_BACKEND:-local}"  # local unless asked
+    assert not {"ECOMM_S3_ACCESS_KEY", "ECOMM_S3_SECRET_KEY"} & set(env)  # never literal in compose
+    assert not any(k.startswith("MINIO_ROOT") for k in env)
+    # Independent profiles: starting these must not drag MinIO in (or fail without it).
+    assert "minio" not in (SERVICES[service].get("depends_on") or {})
+
+
+def test_the_airflow_env_file_order_keeps_its_own_secrets_first() -> None:
+    assert _env_file_paths("airflow-scheduler")[0] == "docker/airflow/.env"
+
+
+def test_the_airflow_and_exporter_images_have_the_s3_client_at_the_locked_versions() -> None:
+    lock = (REPO / "uv.lock").read_text(encoding="utf-8")
+    for image in ("airflow", "exporter"):
+        text = (REPO / "docker" / image / "Dockerfile").read_text(encoding="utf-8")
+        for arg, package in (("BOTO3_VERSION", "boto3"), ("BOTOCORE_VERSION", "botocore")):
+            pinned = re.search(rf"ARG {arg}=(\S+)", text)
+            locked = re.search(rf'name = "{package}"\nversion = "([^"]+)"', lock)
+            assert pinned and locked and pinned.group(1) == locked.group(1), (image, package)
+    # In the Airflow image the client goes into the isolated project venv, not Airflow's own
+    # environment (whose dependencies are pinned by the official constraints).
+    airflow = (REPO / "docker" / "airflow" / "Dockerfile").read_text(encoding="utf-8")
+    assert "ecomm-venv/bin/pip install" in airflow.split("BOTO3_VERSION}")[0].splitlines()[-2]
 
 
 def test_the_compose_image_tag_matches_the_pinned_release() -> None:
