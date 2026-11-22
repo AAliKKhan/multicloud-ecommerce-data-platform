@@ -90,26 +90,92 @@ flowchart LR
 
 ## Screenshots
 
-Captured from the running local stack (Docker, synthetic data, nothing mocked). The data is a three-day demo run, so
-the charts are small; the point is that every panel is backed by a real service and real queries.
+Captured from the running local stack (Docker, synthetic data, nothing mocked). These are not AWS, GCS, or
+BigQuery screenshots. The warehouse on this machine is DuckDB; Metabase reads a Postgres copy of the marts.
+The charts cover a three-day demo, so they are small. A stale panel is shown as stale, not retouched.
 
 ### Grafana: pipeline health
 
 ![Grafana dashboard: pipeline health, ingest outcomes, warehouse loads and Kafka/Spark streaming](docs/images/grafana-pipeline-health.png)
 
-The two "seconds since last load / last Spark batch" panels read about 18 hours because the demo data was
-generated the day before the capture; a stale load is exactly what those panels (and the `PipelineStale` alert)
-exist to show. Details: [docs/monitoring.md](docs/monitoring.md).
+This is the live local dashboard, not a fresh cloud run. At capture the last successful load was about 1.15
+weeks old, Spark lag had no data, and the quality-panel labels were clipped by the panel width. A stale load
+is what those age panels (and the `PipelineStale` alert) exist to show. Details: [docs/monitoring.md](docs/monitoring.md).
 
 ### Metabase: business overview
 
 ![Metabase dashboard: net sales, orders, average order value, payments, top products and low stock](docs/images/metabase-business-overview.png)
 
-Every figure comes from the curated dbt marts, and the dashboard states that the data is synthetic. The negative
-stock levels are a property of the generated events (dbt flags them as warnings), not a dashboard error. The last
-column of the freshness table is clipped in this layout. Details: [docs/bi-dashboard.md](docs/bi-dashboard.md).
+Every figure comes from the curated dbt marts, copied into Postgres because DuckDB cannot have a writer and a
+BI reader at once. At this capture: net sales $50,186.26, 254 orders, average order value $197.58, payment
+success 91.5%, for 1-3 November 2026. The last successful warehouse load shown is 10 November 2026 (3 batches,
+0 failed). This is not BigQuery. Negative stock is a property of the generated events, not a dashboard error.
+The freshness table's right-hand columns are clipped in this layout. Details: [docs/bi-dashboard.md](docs/bi-dashboard.md).
 
-Regenerate both images from the live stacks with `uv run --with playwright python scripts/capture_screenshots.py`.
+### MinIO: local raw bucket
+
+![MinIO object browser for the private local bucket ecomm-raw-minio](docs/images/minio-raw-bucket.png)
+
+Local MinIO standing in for S3. The bucket is private and holds `manifests`, `quarantine`, and `raw`. This does
+not prove the AWS 403-vs-404 probe: MinIO often returns 404 where the Terraform prefix policy would return 403.
+
+### Airflow: warehouse load
+
+![Airflow grid for raw_to_warehouse_daily with three successful runs](docs/images/airflow-dag-runs.png)
+
+`raw_to_warehouse_daily` had three successful runs on 11 November 2026 (`check_lake_ready` and `load_new_batches`).
+The scheduler was not running when this was captured; the banner says its last heartbeat was two weeks earlier.
+These are stored runs, not a new execution started for the screenshot.
+
+### dbt: fct_orders lineage
+
+![dbt docs for fct_orders and its lineage, against the local DuckDB warehouse](docs/images/dbt-lineage.png)
+
+Local dbt docs for `warehouse.analytics.fct_orders` on DuckDB, not BigQuery. The lineage drawer shows the upstream
+staging models and the downstream marts and tests.
+
+### Kafka UI
+
+![Kafka UI topics after a synthetic produce](docs/images/kafka-ui-topics.png)
+
+![Kafka UI showing an order message](docs/images/kafka-ui-messages.png)
+
+Local single-node Kafka after a synthetic produce. The dead-letter topic was empty in that run. Not a multi-broker
+cluster and not a claim of exactly-once delivery.
+
+### GitHub Actions
+
+![GitHub Actions page with the latest workflow green and older red rows still visible](docs/images/github-actions-ci.png)
+
+The latest pushed run on this page (`782194d`) is green. Older red rows are left visible. A green latest run does
+not mean every historical run passed, and it does not mean the pipeline has run on AWS or GCP.
+
+Regenerate a live image with `uv run --with playwright python scripts/capture_screenshots.py <target>`.
+
+## Demo
+
+Six recordings of that same local stack. Played one after another they run about 2 minutes 50 seconds.
+That is under three minutes. The gaps were not filled with extra or invented frames. These are not AWS,
+GCS, or BigQuery recordings, and they are not a failover or exactly-once demonstration.
+
+- [Metabase business overview](docs/demo/metabase.webm) (57s). Synthetic marts in Postgres: net sales
+  $50,186.26, 254 orders, average order value $197.58, payment success 91.5%. Not BigQuery.
+- [Kafka UI](docs/demo/kafka.webm) (28s). Local `commerce.orders`, 102 messages, `event_id` in the value
+  preview. Single-node broker, not a cluster.
+- [dbt docs lineage](docs/demo/dbt.webm) (25s). `fct_orders` on local DuckDB
+  (`warehouse.analytics.fct_orders`), not BigQuery.
+- [MinIO raw bucket](docs/demo/minio.webm) (16s). Private local bucket `ecomm-raw-minio` with `manifests`,
+  `quarantine`, and `raw`. This does not prove the AWS 403-vs-404 probe.
+- [Grafana pipeline health](docs/demo/grafana.webm) (27s). The load-age panel reads 1.15 weeks. Spark was
+  not running, so Spark lag says "No data". The Spark age figure is a missing-batch sentinel, not a
+  decades-long outage.
+- [Airflow warehouse load](docs/demo/airflow.webm) (20s). `raw_to_warehouse_daily` shows 3 stored
+  successful runs from 11 November 2026. The scheduler was not running; its last heartbeat was two weeks
+  earlier. These are not a new execution started for the recording.
+
+Regenerate one clip with `uv run --with playwright python scripts/record_demo.py <target>`
+(`metabase`, `kafka`, `dbt`, `minio`, `grafana`, `airflow`). The service has to be up first. The recorder
+films the live page. It does not draw title cards.
 
 ## Tech stack
 
