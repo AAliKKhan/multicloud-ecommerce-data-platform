@@ -190,7 +190,7 @@ films the live page. It does not draw title cards.
 | Stream processing | ![Spark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white) | Validate, de-duplicate, land events (Structured Streaming, one container); can land the S3 side in MinIO | In use |
 | Object storage | ![S3](https://img.shields.io/badge/AWS_S3-569A31?logo=amazons3&logoColor=white) ![GCS](https://img.shields.io/badge/Google_Cloud_Storage-4285F4?logo=googlecloud&logoColor=white) ![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white) | Raw archive on two clouds. The S3 side can run on a real S3-compatible server (MinIO, built from patched source); GCS is still a local directory | S3 adapter verified against MinIO; AWS and GCS unverified |
 | Catalog | ![Glue](https://img.shields.io/badge/AWS_Glue_Catalog-FF9900?logo=amazonwebservices&logoColor=white) | Metadata for the S3 copy | Planned |
-| Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Client built, unverified |
+| Warehouse | ![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white) | Analytical storage | Query and batch load verified in sandbox; `MERGE` blocked |
 | Transformations | ![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white) | 19 models, 85+ tests; runs on DuckDB, BigQuery SQL syntax-checked | In use |
 | Orchestration | ![Airflow](https://img.shields.io/badge/Apache_Airflow-017CEE?logo=apacheairflow&logoColor=white) | 4 DAGs: daily load, dbt + tests, cross-cloud reconciliation, parameterized backfill | In use |
 | Infrastructure | ![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white) | AWS + GCP buckets, datasets, IAM, Glue; validated in CI | Validated, never applied |
@@ -231,8 +231,9 @@ services are integrated last.
 | M9 | Data quality and observability | Done: quality suite, quarantine tool, exporter, 12 alert rules (run through the real Prometheus rule engine) and a Grafana dashboard, all running in Docker. Spark driver and Airflow metrics are not scraped |
 | M10 | BI dashboard and portfolio polish | Partly done: Metabase dashboard running in Docker, numbers checked against the marts; real Grafana and Metabase screenshots committed; a demo recording pending |
 
-Cloud code (S3, GCS, BigQuery) is developed behind interfaces and tested with
-`moto` and fakes. It stays marked **unverified** until run against real accounts.
+**BigQuery sandbox:** With billing disabled, the [sandbox probe](scripts/probe_bigquery_sandbox.py) ran `SELECT 1`, batch-loaded one synthetic row, and read back `event_id = 'probe-1'` using the fully qualified table name. BigQuery rejected `MERGE` with `403 billingNotEnabled`: the free tier does not allow DML. This verifies the client query and load paths, not the loader’s merge or replay behavior. Both probe attempts deleted their temporary tables and datasets.
+
+Real S3 and GCS remain unverified; their adapter tests use `moto` and fakes.
 
 ## Quick start (no Docker, no cloud)
 
